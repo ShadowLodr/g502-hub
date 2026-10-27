@@ -119,9 +119,11 @@ protocol G HUB uses.
 
 ## FAQ
 
-**Does it support other G502 models?** Only the wired G502 HERO (USB
-`046d:c08b`) so far. Other models need someone with one to help test; open
-an issue with your "Copy for a bug report" info from the About page.
+**Does it support other G502 models?** The wired G502 HERO (USB
+`046d:c08b`) and the G502 LIGHTSPEED, through its receiver (`046d:407f`,
+including the POWERPLAY mat's) or on its cable (`046d:c08d`). Other models
+need someone with one to help test; open an issue with your "Copy for a bug
+report" info from the About page.
 
 **Wayland?** Yes, that's what it's built on. Screen capture goes through the
 desktop's screen-sharing portal (KDE asks once which screen to share), the
