@@ -19,7 +19,7 @@ LINKEDIN = "https://www.linkedin.com/in/ahmedsaad0/"
 DISCLAIMER = ("An unofficial, independent project. Not affiliated with, endorsed or supported by "
               "Logitech. Logitech, Logitech G, G HUB, LIGHTSYNC, HERO and G502 are trademarks of "
               "Logitech Europe S.A.; Counter-Strike 2, Dota 2 and Steam are trademarks of Valve "
-              "Corporation. The mouse photo is Logitech's, downloaded from logitechg.com on first start.")
+              "Corporation. The mouse and POWERPLAY photos are Logitech's, downloaded from logitechg.com when first shown.")
 
 # Projects whose public code and notes on Logitech's HID++ protocol helped map the mouse
 # (see docs/protocol.md for the exact references)

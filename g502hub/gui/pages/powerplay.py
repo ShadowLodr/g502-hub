@@ -1,58 +1,83 @@
 """POWERPLAY page: the charging mat's logo light, which it keeps by itself."""
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QConicalGradient, QPainter, QRadialGradient
+import time
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
 from ...onboard import LedEffect
-from .. import theme
+from .. import mat_photo, theme
+from ..mouse_view import effect_color
+from ..photo import PhotoFetcher
 from ..widgets import ChoiceList, ColorPicker, SliderRow, heading, muted
 from . import Page
 from .lighting import EFFECTS
 
 
 class MatView(QWidget):
-    """The mat from above, its logo lit like the real one."""
+    """Logitech's photo of the mat, its logo lit like the real one."""
 
     def __init__(self):
         super().__init__()
+        self.setMinimumSize(300, 300)
         self.effect = None
+        self.message = ""
+        image = mat_photo.load_image()
+        self.skin = mat_photo.MatSkin(image) if image is not None else None
+        self.fetcher = PhotoFetcher(self, mat_photo.download)
+        self.fetcher.done.connect(self._fetched)
+        self._t0 = time.monotonic()
+        self._timer = QTimer(self, interval=33)
+        self._timer.timeout.connect(self.update)
+
+    def showEvent(self, e):
+        # Only fetch once someone with a mat opens the page
+        if self.skin is None and not self.fetcher.busy:
+            self.fetch_photo()
+        super().showEvent(e)
+
+    def fetch_photo(self):
+        self.message = "Getting the picture of the POWERPLAY from logitechg.com…"
+        self.update()
+        self.fetcher.start()
+
+    def _fetched(self, error):
+        image = None if error else mat_photo.load_image()
+        if image is None:
+            self.message = (f"Couldn't download the picture of the mat ({error or 'damaged file'}). "
+                            "Click here to try again.")
+        else:
+            self.skin = mat_photo.MatSkin(image)
+        self.update()
+
+    def mousePressEvent(self, e):
+        if self.skin is None and not self.fetcher.busy:
+            self.fetch_photo()
 
     def set_effect(self, effect):
         self.effect = effect
+        if effect is not None and effect.effect in (0x03, 0x0A):
+            self._timer.start()
+        else:
+            self._timer.stop()
         self.update()
 
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        side = min(self.width() * 0.7, self.height() * 0.8)
-        mat = QRectF((self.width() - side) / 2, (self.height() - side * 0.85) / 2, side, side * 0.85)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#17191c"))
-        p.drawRoundedRect(mat, 18, 18)
-        center = QPointF(mat.right() - side * 0.12, mat.top() + side * 0.12)
-        radius = side * 0.045
-        eff = self.effect
-        if eff is not None and eff.effect in (0x01, 0x0A):
-            color = QColor(*eff.color)
-            glow = QRadialGradient(center, radius * 4)
-            glow.setColorAt(0, QColor(color.red(), color.green(), color.blue(), 120))
-            glow.setColorAt(1, QColor(0, 0, 0, 0))
-            p.setBrush(glow)
-            p.drawEllipse(center, radius * 4, radius * 4)
-            p.setBrush(color)
-        elif eff is not None and eff.effect == 0x03:
-            ring = QConicalGradient(center, 0)
-            for i, hue in enumerate((0, 60, 120, 180, 240, 300, 0)):
-                ring.setColorAt(i / 6, QColor.fromHsv(hue, 255, 255))
-            p.setBrush(ring)
-        else:
-            p.setBrush(QColor("#2a2d31"))
-        p.drawEllipse(center, radius, radius)
-        p.setPen(QColor(theme.FAINT))
-        p.setFont(theme.font(12))
-        p.drawText(mat.adjusted(0, 0, 0, -16), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
-                   "POWERPLAY")
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        if self.skin is None:
+            p.setPen(QColor(theme.MUTED))
+            p.setFont(theme.font(15))
+            p.drawText(self.rect().adjusted(40, 0, -40, 0),
+                       Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.message)
+            return
+        w, h = mat_photo.PHOTO_SIZE
+        scale = min(self.width() * 0.8 / w, self.height() * 0.85 / h)
+        p.translate((self.width() - w * scale) / 2, (self.height() - h * scale) / 2)
+        p.scale(scale, scale)
+        self.skin.paint(p, effect_color(self.effect, time.monotonic() - self._t0))
 
 
 class PowerplayPage(Page):
