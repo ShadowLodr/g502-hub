@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from g502hub import macro, onboard
-from g502hub.device import battery_percent, parse_dpi_list
+from g502hub.device import G502, battery_percent, parse_dpi_list
 from g502hub.onboard import (Binding, Consumer, Directory, Key, LedEffect, MouseButton,
                              Profile, Special, Unassigned)
 
@@ -150,6 +150,19 @@ def test_battery_percent():
     assert battery_percent(3811) == 50
     assert battery_percent(3830) == 54  # between the 50% and 60% points
     assert battery_percent(3400) == 0
+
+
+@pytest.mark.parametrize("reply, percent, charging, full", [
+    ("0fca00", 87, False, False),    # 4042 mV on battery
+    ("106280", None, True, False),   # 4194 mV on the charger: too high to trust
+    ("106281", 100, False, True),    # charge finished
+])
+def test_battery_from_voltage_reply(reply, percent, charging, full):
+    dev = G502.__new__(G502)
+    dev.hidpp = type("Hidpp", (), {"feature_index": lambda self, fid: 6})()
+    dev._call = lambda *a: bytes.fromhex(reply).ljust(16, b"\0")
+    bat = dev.battery()
+    assert (bat.percent, bat.charging, bat.full) == (percent, charging, full)
 
 
 def test_macro_round_trip_across_a_jump():

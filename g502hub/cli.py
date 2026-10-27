@@ -93,8 +93,9 @@ def cmd_info(dev, args):
     mode = {MODE_ONBOARD: "onboard", MODE_HOST: "host (software)"}.get(dev.get_mode(), "?")
     print(f"  mode: {mode}")
     if bat := dev.battery():
-        state = "full" if bat.full else "charging" if bat.charging else "on battery"
-        print(f"  battery: ~{bat.percent}% ({bat.millivolts} mV, {state})")
+        level = "charging" if bat.percent is None else f"~{bat.percent}%"
+        state = "full" if bat.full else "on the charger" if bat.charging else "on battery"
+        print(f"  battery: {level} ({bat.millivolts} mV, {state})")
     if dev.get_mode() == MODE_ONBOARD:
         cur = dev.get_current_profile()
         print(f"  active profile: {'ROM ' if cur >= ROM else ''}slot {cur & 0xFF}, "

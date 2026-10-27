@@ -76,7 +76,7 @@ def battery_percent(mv):
 @dataclass
 class Battery:
     millivolts: int
-    percent: int
+    percent: int | None  # None while charging: the charger lifts the voltage, so it would read high
     charging: bool
     full: bool
 
@@ -192,7 +192,7 @@ class G502:
         # flags bit 7: external power; bits 0-2 then 0 = charging, 1 = full, 2 = slow charging
         charging = bool(flags & 0x80) and flags & 0x07 in (0, 2)
         full = bool(flags & 0x80) and flags & 0x07 == 1
-        return Battery(mv, 100 if full else battery_percent(mv), charging, full)
+        return Battery(mv, 100 if full else None if charging else battery_percent(mv), charging, full)
 
     # ------------------------------------------------------------ onboard profiles
 

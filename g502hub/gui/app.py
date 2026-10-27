@@ -249,10 +249,14 @@ class MainWindow(QMainWindow):
         self.battery.setVisible(bat is not None and self.state.connected)
         if bat is None:
             return
-        state = "FULL" if bat.full else "CHARGING" if bat.charging else "BATTERY"
-        self.battery.setText(f"{state}  {bat.percent}%")
-        self.battery.setToolTip(f"About {bat.percent}% ({bat.millivolts} mV); estimated from the voltage")
-        low = bat.percent <= 15 and not (bat.charging or bat.full)
+        if bat.percent is None:
+            self.battery.setText("CHARGING")
+            self.battery.setToolTip(f"{bat.millivolts} mV. The level shows again once it's off the "
+                                    "charger; charging lifts the voltage it's estimated from")
+        else:
+            self.battery.setText(f"{'FULL' if bat.full else 'BATTERY'}  {bat.percent}%")
+            self.battery.setToolTip(f"About {bat.percent}% ({bat.millivolts} mV); estimated from the voltage")
+        low = bat.percent is not None and bat.percent <= 15 and not bat.full
         self.battery.setProperty("kind", "low" if low else "")
         self.battery.style().unpolish(self.battery)
         self.battery.style().polish(self.battery)
