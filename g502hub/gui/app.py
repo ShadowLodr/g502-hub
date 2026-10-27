@@ -34,7 +34,7 @@ class Placeholder(QWidget):
         super().__init__()
         col = QVBoxLayout(self)
         col.addStretch()
-        self.title = QLabel("Connect your G502 HERO")
+        self.title = QLabel("Connect your G502")
         self.title.setObjectName("Title")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self.title)
@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self.state.profileEdited.connect(self._profile_edited)
         self.state.status.connect(self._status)
         self.state.connectedChanged.connect(self._connected)
+        self.state.batteryChanged.connect(self._show_battery)
         self.live.colors.connect(self.view.set_live)
         self.live.status.connect(self._status)
         self.live.runningChanged.connect(self._live_changed)
@@ -159,9 +160,9 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(24, 0, 24, 0)
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        name = QLabel("G502 HERO")
-        name.setFont(theme.font(15, QFont.Weight.Bold))
-        titles.addWidget(name)
+        self.model_label = QLabel("G502")
+        self.model_label.setFont(theme.font(15, QFont.Weight.Bold))
+        titles.addWidget(self.model_label)
         self.subtitle = QLabel("ONBOARD MEMORY")
         self.subtitle.setObjectName("Heading")
         titles.addWidget(self.subtitle)
@@ -184,6 +185,11 @@ class MainWindow(QMainWindow):
         self.live_dpi.setFixedHeight(28)
         self.live_dpi.hide()
         right.addWidget(self.live_dpi, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.battery = QLabel()
+        self.battery.setObjectName("LiveDpi")
+        self.battery.setFixedHeight(28)
+        self.battery.hide()
+        right.addWidget(self.battery, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addLayout(right, 1)
         return bar
 
@@ -206,6 +212,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ state signals
 
     def _loaded(self):
+        self.model_label.setText(self.state.model)
+        self._show_battery()
         self._fill_profile_box()
         self._shown_slot = self.state.active_slot
         self._sync_center()
@@ -232,7 +240,22 @@ class MainWindow(QMainWindow):
     def _connected(self, connected):
         self.side.setEnabled(connected)
         self.profile_box.setEnabled(connected)
+        if not connected:
+            self.battery.hide()
         self._sync_center()
+
+    def _show_battery(self):
+        bat = self.state.battery
+        self.battery.setVisible(bat is not None and self.state.connected)
+        if bat is None:
+            return
+        state = "FULL" if bat.full else "CHARGING" if bat.charging else "BATTERY"
+        self.battery.setText(f"{state}  {bat.percent}%")
+        self.battery.setToolTip(f"About {bat.percent}% ({bat.millivolts} mV); estimated from the voltage")
+        low = bat.percent <= 15 and not (bat.charging or bat.full)
+        self.battery.setProperty("kind", "low" if low else "")
+        self.battery.style().unpolish(self.battery)
+        self.battery.style().polish(self.battery)
 
     def _status(self, kind, text):
         self.status_label.setText(text)

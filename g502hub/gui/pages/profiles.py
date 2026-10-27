@@ -48,7 +48,7 @@ class SlotCard(Card):
             self.light_names.append((zone, name))
         lights.addStretch()
         self.body.addLayout(lights)
-        self.cycle = QCheckBox("Included when G9 cycles profiles")
+        self.cycle = QCheckBox("Included when cycling profiles")
         self.cycle.clicked.connect(lambda on: page.state.set_slot_enabled(slot, on))
         self.body.addWidget(self.cycle)
         row = QHBoxLayout()
@@ -152,7 +152,7 @@ class ProfilesPage(Page):
         title.setObjectName("Title")
         grid.addWidget(title, 0, 0, 1, 2)
         grid.addWidget(muted("These 5 profiles live on the mouse and work on any computer. "
-                             "G9 switches between the included ones.", "Faint"), 1, 0, 1, 2)
+                             "A button set to Cycle profiles switches between the included ones.", "Faint"), 1, 0, 1, 2)
         self.cards = [SlotCard(self, n) for n in range(1, 6)]
         for i, card in enumerate(self.cards):
             grid.addWidget(card, 2 + i // 2, i % 2)

@@ -9,7 +9,9 @@ from ..device import MODE_ONBOARD, ROM, DeviceNotFound, G502, NoPermission
 
 SAVE_DELAY_MS = 700
 POLL_MS = 250
+WIRELESS_POLL_MS = 1000  # each poll is a radio round trip, so ask a wireless mouse less often
 RECONNECT_MS = 2000
+BATTERY_S = 60
 
 
 class _Worker(QObject):
@@ -80,6 +82,7 @@ class MouseState(QObject):
     loaded = Signal()
     profileEdited = Signal(int)  # slot
     activeChanged = Signal()
+    batteryChanged = Signal()
     status = Signal(str, str)  # kind (busy, ok, error, info), text
 
     def __init__(self):
@@ -87,6 +90,10 @@ class MouseState(QObject):
         self.bridge = Bridge()
         self.connected = False
         self.no_permission = False
+        self.model = "G502"
+        self.wireless = False
+        self.battery = None  # device.Battery, on the wireless mouse
+        self._battery_at = 0.0
         self.name = ""
         self.firmware = []
         self.info = None
@@ -107,7 +114,7 @@ class MouseState(QObject):
 
         self._save_timer = QTimer(self, singleShot=True, interval=SAVE_DELAY_MS)
         self._save_timer.timeout.connect(self.flush)
-        self.poll_ms = POLL_MS
+        self.poll_ms = POLL_MS  # what live effects asked for
         self._poll_timer = QTimer(self, interval=POLL_MS)
         self._poll_timer.timeout.connect(self._poll)
         self._led_timer = QTimer(self, singleShot=True, interval=40)
@@ -125,11 +132,14 @@ class MouseState(QObject):
         self._loading = True
 
         def job(dev):
+            if dev.wireless:
+                dev.ping()
             if dev.get_mode() != MODE_ONBOARD:
                 dev.set_mode(MODE_ONBOARD)
             directory = dev.read_directory()
             rom = onboard.Directory.decode(dev.read_sector(ROM))
             return {
+                "model": dev.model, "wireless": dev.wireless, "battery": dev.battery(),
                 "name": dev.name(), "firmware": dev.firmware(), "info": dev.onboard_info(),
                 "zones": dev.led_zones(), "dpi_range": dev.dpi_range(),
                 "intervals": dev.report_intervals(), "directory": directory,
@@ -141,8 +151,8 @@ class MouseState(QObject):
                 "active": dev.get_current_profile(), "dpi_index": dev.get_current_dpi_index(),
             }
 
-        if not self.connected:
-            self.status.emit("busy", "Looking for the G502 HERO…")
+        if not self.connected and not self.wireless:  # a sleeping mouse keeps its message
+            self.status.emit("busy", "Looking for the mouse…")
         self.bridge.call(job, self._loaded)
 
     def _loaded(self, data, error):
@@ -160,9 +170,10 @@ class MouseState(QObject):
                 self.status.emit("info", str(error) if isinstance(error, DeviceNotFound)
                                  else "Mouse disconnected")
             return
-        for key in ("name", "firmware", "info", "zones", "dpi_range", "intervals",
-                    "directory", "profiles", "factory", "dpi_index", "pages"):
+        for key in ("model", "wireless", "battery", "name", "firmware", "info", "zones", "dpi_range",
+                    "intervals", "directory", "profiles", "factory", "dpi_index", "pages"):
             setattr(self, key, data[key])
+        self._battery_at = time.monotonic()
         self.active_slot = self.slot_of(data["active"])
         self._dirty.clear()
         self._set_connected(True)
@@ -172,14 +183,18 @@ class MouseState(QObject):
     def _set_connected(self, connected):
         if connected != self.connected:
             self.connected = connected
-            self._poll_timer.setInterval(self.poll_ms if connected else RECONNECT_MS)
+            self._poll_timer.setInterval(self._poll_interval() if connected else RECONNECT_MS)
             self.connectedChanged.emit(connected)
 
     def set_poll_ms(self, ms):
         """How often to read the active profile and DPI level (faster for DPI-linked effects)."""
         self.poll_ms = ms
         if self.connected:
-            self._poll_timer.setInterval(ms)
+            self._poll_timer.setInterval(self._poll_interval())
+
+    def _poll_interval(self):
+        # A DPI-linked live effect still gets its fast polling on the wireless mouse
+        return self.poll_ms if self.poll_ms < POLL_MS or not self.wireless else WIRELESS_POLL_MS
 
     def slot_of(self, sector):
         for n, entry in enumerate(self.directory.entries, 1):
@@ -196,14 +211,19 @@ class MouseState(QObject):
             return
         if self.bridge.pending:
             return
-        self.bridge.call(lambda dev: (dev.get_current_profile(), dev.get_current_dpi_index()),
-                         self._polled)
+        want_battery = self.wireless and time.monotonic() - self._battery_at > BATTERY_S
+        self.bridge.call(lambda dev: (dev.get_current_profile(), dev.get_current_dpi_index(),
+                                      dev.battery() if want_battery else None), self._polled)
 
     def _polled(self, result, error):
         if error:
             self._set_connected(False)
-            self.status.emit("info", "Mouse disconnected")
+            self.status.emit("info", f"{self.model} is asleep or switched off. Move it to wake it up."
+                             if self.wireless else "Mouse disconnected")
             return
+        if result[2] is not None:
+            self.battery, self._battery_at = result[2], time.monotonic()
+            self.batteryChanged.emit()
         slot, dpi_index = self.slot_of(result[0]), result[1]
         if (slot, dpi_index) != (self.active_slot, self.dpi_index):
             self.active_slot, self.dpi_index = slot, dpi_index

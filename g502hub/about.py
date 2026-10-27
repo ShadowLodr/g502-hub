@@ -3,7 +3,7 @@
 from . import __version__
 
 APP_NAME = "G502 Hub"
-TAGLINE = "An unofficial G HUB alternative for the Logitech G502 HERO, on Linux"
+TAGLINE = "An unofficial G HUB alternative for the Logitech G502 HERO and G502 LIGHTSPEED, on Linux"
 VERSION = __version__
 AUTHOR = "Ahmed Saad"
 LICENSE = "GPL-3.0-or-later"

@@ -44,6 +44,7 @@ QLabel#LiveDpi {{
     background: {RAISED}; border: 1px solid {BORDER}; border-radius: 13px; padding: 4px 12px;
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
+QLabel#LiveDpi[kind="low"] {{ color: {DANGER}; border-color: {DANGER}; }}
 QLabel#Status {{ color: {MUTED}; font-size: 12px; }}
 QLabel#Status[kind="error"] {{ color: {DANGER}; }}
 QLabel#Status[kind="ok"] {{ color: {OK}; }}

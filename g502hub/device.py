@@ -17,6 +17,7 @@ VID, PID = 0x046D, 0xC08B
 # (product id, wireless) in lookup order: the HERO, then the LIGHTSPEED through its
 # receiver (the logitech-dj child node), then the LIGHTSPEED on its charging cable
 PRODUCTS = ((0xC08B, False), (0x407F, True), (0xC08D, False))
+LIGHTSPEED = (0x407F, 0xC08D)
 
 ROOT, FEATURE_SET, FW_VERSION, DEVICE_NAME = 0x0000, 0x0001, 0x0003, 0x0005
 BATTERY_VOLTAGE, ADJUSTABLE_DPI, REPORT_RATE = 0x1001, 0x2201, 0x8060
@@ -37,6 +38,10 @@ class DeviceNotFound(Exception):
 
 class NoPermission(DeviceNotFound):
     """The mouse is there but this user may not open it (the udev rule is missing)."""
+
+
+class DeviceAsleep(DeviceNotFound):
+    """The receiver is there but the wireless mouse doesn't answer (asleep or switched off)."""
 
 
 def _exclusive(method):
@@ -111,9 +116,10 @@ class LedZone:
 
 class G502:
     def __init__(self, path=None, wireless=False):
+        pid = None
         if not path:
-            path, wireless = next(((p, w) for pid, w in PRODUCTS if (p := find_hidraw(VID, pid))),
-                                  (None, False))
+            path, wireless, pid = next(((p, w, pid) for pid, w in PRODUCTS if (p := find_hidraw(VID, pid))),
+                                       (None, False, None))
         if not path:
             raise DeviceNotFound("G502 not found (is it plugged in, or its receiver?)")
         try:
@@ -122,6 +128,7 @@ class G502:
             raise NoPermission(f"no permission on {path}: install udev/70-g502-hub.rules") from None
         self.path = path
         self.wireless = wireless
+        self.model = "G502 LIGHTSPEED" if wireless or pid in LIGHTSPEED else "G502 HERO"
         self._onboard_info = None
         self._zones = None
         self._lock_fd = None
@@ -143,6 +150,14 @@ class G502:
         return self.hidpp.request(idx, function, params, **kw)
 
     # ------------------------------------------------------------ identity
+
+    def ping(self, timeout=0.3):
+        """Raise DeviceAsleep unless the mouse answers quickly; the receiver can't
+        tell us whether it is awake, so ask the mouse itself."""
+        try:
+            self.hidpp.request(0, 1, [0, 0, 0x5A], timeout=timeout, retries=0)
+        except (TimeoutError, HidppError):
+            raise DeviceAsleep(f"{self.model} is asleep or switched off. Move it to wake it up.") from None
 
     def features(self):
         """[(index, feature id, type flags, version)] for every feature."""

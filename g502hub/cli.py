@@ -360,6 +360,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         with G502() as dev:
+            if dev.wireless:
+                dev.ping()
             args.func(dev, args)
     except (DeviceNotFound, ValueError, IOError, HidppError, TimeoutError) as e:
         sys.exit(f"g502hub: {e}")
