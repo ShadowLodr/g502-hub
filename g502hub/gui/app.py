@@ -140,6 +140,8 @@ class MainWindow(QMainWindow):
         self.state.connectedChanged.connect(self._connected)
         self.state.batteryChanged.connect(self._show_battery)
         self.live.colors.connect(self.view.set_live)
+        mat_view = next(p for p in self.pages if isinstance(p, PowerplayPage)).mat
+        self.live.colors.connect(lambda colors: mat_view.set_live(colors.get(1) if self.state.syncing_mat else None))
         self.live.status.connect(self._status)
         self.live.runningChanged.connect(self._live_changed)
         self.tray = self._make_tray()

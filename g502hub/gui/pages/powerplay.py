@@ -4,7 +4,7 @@ import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QCheckBox, QLabel, QWidget
 
 from ...onboard import LedEffect
 from .. import mat_photo, theme
@@ -22,6 +22,7 @@ class MatView(QWidget):
         super().__init__()
         self.setMinimumSize(300, 300)
         self.effect = None
+        self.live = None  # a QColor streamed by a live effect, overriding self.effect
         self.message = ""
         image = mat_photo.load_image()
         self.skin = mat_photo.MatSkin(image) if image is not None else None
@@ -55,6 +56,11 @@ class MatView(QWidget):
         if self.skin is None and not self.fetcher.busy:
             self.fetch_photo()
 
+    def set_live(self, color):
+        if color != self.live:
+            self.live = color
+            self.update()
+
     def set_effect(self, effect):
         self.effect = effect
         if effect is not None and effect.effect in (0x03, 0x0A):
@@ -77,7 +83,7 @@ class MatView(QWidget):
         scale = min(self.width() * 0.8 / w, self.height() * 0.85 / h)
         p.translate((self.width() - w * scale) / 2, (self.height() - h * scale) / 2)
         p.scale(scale, scale)
-        self.skin.paint(p, effect_color(self.effect, time.monotonic() - self._t0))
+        self.skin.paint(p, self.live or effect_color(self.effect, time.monotonic() - self._t0))
 
 
 class PowerplayPage(Page):
@@ -93,8 +99,16 @@ class PowerplayPage(Page):
         self.layout.addWidget(title)
         self.layout.addWidget(muted("The light on the mat's logo. The mat keeps it by itself, so it "
                                     "works without this app and with the mouse off.", "Faint"))
+        self.sync = QCheckBox("Match the mouse")
+        self.sync.setToolTip("The mat shows the mouse's logo lighting: the active profile's, "
+                             "and live effects while they run")
+        self.sync.clicked.connect(self._sync_clicked)
+        self.layout.addWidget(self.sync)
+        self.follows = muted("", "Faint")
+        self.layout.addWidget(self.follows)
 
-        self.layout.addWidget(heading("Effect"))
+        self.effect_heading = heading("Effect")
+        self.layout.addWidget(self.effect_heading)
         self.effects = ChoiceList(EFFECTS, columns=2)
         self.effects.changed.connect(lambda _: self._apply(final=True))
         self.layout.addWidget(self.effects)
@@ -114,7 +128,11 @@ class PowerplayPage(Page):
         self.brightness.committed.connect(lambda _: self._apply(final=True))
         self.layout.addWidget(self.brightness)
         self.layout.addStretch()
+        state.matChanged.connect(self.refresh)
 
+    def _sync_clicked(self, on):
+        self.state.set_mat_sync(on)
+        self.refresh()
     def _effect(self):
         effect = self.effects.value() if self.effects.value() is not None else 0x01
         c = self.picker.color()
@@ -128,7 +146,7 @@ class PowerplayPage(Page):
         return LedEffect.off()
 
     def _apply(self, final):
-        if self.state.mat_led is None:
+        if self.state.mat_led is None or self.state.mat_sync:
             return
         effect = self._effect()
         self._show_controls(effect.effect)
@@ -146,6 +164,13 @@ class PowerplayPage(Page):
         led = self.state.mat_led
         if led is None:
             return
+        synced = self.state.mat_sync
+        self.sync.setChecked(synced)
+        self.follows.setVisible(synced)
+        self.follows.setText(f"Following the logo of profile {self.state.active_slot} on the mouse, and "
+                             "live effects while they run. Change it on the LIGHTSYNC page.")
+        for w in (self.effect_heading, self.effects, self.color_heading, self.picker, self.rate, self.brightness):
+            w.setEnabled(not synced)
         self.mat.set_effect(led)
         self.effects.set_value(led.effect if led.effect in dict(EFFECTS) else None)
         if led.effect in (0x01, 0x0A):

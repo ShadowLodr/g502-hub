@@ -19,6 +19,7 @@ from .state import POLL_MS
 
 FPS = 30
 KEEPALIVE_S = 1.0  # resend even unchanged colors, e.g. after G9 loads another profile
+REALIGN_MS = 10 * 60 * 1000  # restart the saved animations together, for a mat that follows the mouse
 FAST_POLL_MS = 120
 
 EFFECTS = [("screen", "Screen sampler"), ("audio", "Audio visualizer"),
@@ -74,6 +75,9 @@ class LiveLighting(QObject):
         self._screen_state = None
         self._timer = QTimer(self, interval=1000 // FPS)
         self._timer.timeout.connect(self._tick)
+        self._realign = QTimer(self, interval=REALIGN_MS)
+        self._realign.timeout.connect(self._realign_mat)
+        self._realign.start()
 
     @property
     def running(self):
@@ -332,8 +336,17 @@ class LiveLighting(QObject):
         if changed and self.state.connected and not self.state.bridge.pending:
             self._sent.update(changed)
             self._sent_at = now
+            mirror = changed.get(1) if self.state.syncing_mat else None
 
             def job(dev):
                 for zone, c in changed.items():
                     dev.set_led(zone, LedEffect.fixed(c))
+                if mirror:
+                    dev.powerplay().set_led(0, LedEffect.fixed(mirror))
             self.state.bridge.call(job)
+
+    def _realign_mat(self):
+        """Breathing and color cycle drift apart on the mouse and the mat; line them up again."""
+        profile = self.state.profile()
+        if not self.active and profile is not None and profile.leds[1].effect in (0x03, 0x0A):
+            self.state.sync_mat(realign=True)

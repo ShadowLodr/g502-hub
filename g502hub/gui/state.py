@@ -84,6 +84,7 @@ class MouseState(QObject):
     profileEdited = Signal(int)  # slot
     activeChanged = Signal()
     batteryChanged = Signal()
+    matChanged = Signal()
     status = Signal(str, str)  # kind (busy, ok, error, info), text
 
     def __init__(self):
@@ -95,7 +96,9 @@ class MouseState(QObject):
         self.wireless = False
         self.battery = None  # device.Battery, on the wireless mouse
         self.mat_led = None  # the POWERPLAY mat's logo LedEffect, when there's a mat
+        self.mat_sync = bool(settings.load().get("mat_sync"))  # the mat follows the mouse's logo
         self._mat_pending = None
+        self._mat_slot = None  # the profile the mat last followed
         self._battery_at = 0.0
         self.name = ""
         self.firmware = []
@@ -122,6 +125,8 @@ class MouseState(QObject):
         self._poll_timer.timeout.connect(self._poll)
         self._led_timer = QTimer(self, singleShot=True, interval=40)
         self._led_timer.timeout.connect(self._send_led_preview)
+        self.activeChanged.connect(self._follow_profile)
+        self.profileEdited.connect(lambda slot: slot == self.active_slot and self.sync_mat())
         self._mat_timer = QTimer(self, singleShot=True, interval=40)
         self._mat_timer.timeout.connect(lambda: self._send_mat_led(self._mat_pending, persistence=0))
 
@@ -184,6 +189,8 @@ class MouseState(QObject):
         self._dirty.clear()
         self._set_connected(True)
         self.loaded.emit()
+        self._mat_slot = self.active_slot
+        self.sync_mat(realign=True)
         self.status.emit("ok", "Ready")
 
     def _set_connected(self, connected):
@@ -420,13 +427,59 @@ class MouseState(QObject):
 
     def _send_led_preview(self):
         pending, self._led_pending = self._led_pending, {}
+        mirror = self.syncing_mat and pending.get(1)
 
         def job(dev):
             for zone, effect in pending.items():
                 dev.set_led(zone, effect, persistence=0)
+            if mirror:
+                dev.powerplay().set_led(0, mirror, persistence=0)
 
         if self.connected:
             self.bridge.call(job)
+
+    # ------------------------------------------------------------ POWERPLAY sync
+
+    @property
+    def syncing_mat(self):
+        return self.mat_sync and self.mat_led is not None and self.connected
+
+    def _follow_profile(self):
+        # DPI changes fire this too; only a different profile changes the logo lighting
+        if self.active_slot != self._mat_slot:
+            self._mat_slot = self.active_slot
+            self.sync_mat(realign=True)
+
+    def set_mat_sync(self, on):
+        self.mat_sync = on
+        settings.update(mat_sync=on)
+        self.sync_mat(realign=True)
+
+    def sync_mat(self, realign=False):
+        """Give the mat the active profile's logo lighting, saved in the mat so it keeps
+        it without the app. realign: restart the mouse's and the mat's animations
+        together, since each runs them on its own clock and they drift apart."""
+        profile = self.profile()
+        if not self.syncing_mat or profile is None:
+            return
+        logo, leds = profile.leds[1], list(profile.leds[:2])
+        save = logo != self.mat_led
+        if not (save or realign):
+            return
+        self.mat_led = logo
+        self.matChanged.emit()
+
+        def job(dev):
+            mat = dev.powerplay()
+            if save:
+                mat.set_led(0, logo, persistence=1)
+            if realign:
+                # Back to back, so both animations start from the same moment
+                for zone, effect in enumerate(leds):
+                    dev.set_led(zone, effect, persistence=0)
+                mat.set_led(0, logo, persistence=0)
+
+        self.bridge.call(job, lambda _, e: e and self.status.emit("error", f"POWERPLAY: {e}"))
 
     def set_mat_led(self, effect, final):
         """Light the POWERPLAY mat's logo: throttled while dragging, saved in the mat when final."""
