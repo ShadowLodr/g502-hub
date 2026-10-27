@@ -1,4 +1,4 @@
-"""The G502 HERO's HID++ features: onboard profiles, DPI, report rate, LEDs, button spy.
+"""The G502's HID++ features: onboard profiles, DPI, report rate, LEDs, button spy, battery.
 
 Function numbers and payloads come from docs/protocol.md.
 """
@@ -14,13 +14,21 @@ from . import onboard
 from .hidpp import ERR_BUSY, ERR_HARDWARE, Hidpp, HidppError, find_hidraw
 
 VID, PID = 0x046D, 0xC08B
+# (product id, wireless) in lookup order: the HERO, then the LIGHTSPEED through its
+# receiver (the logitech-dj child node), then the LIGHTSPEED on its charging cable
+PRODUCTS = ((0xC08B, False), (0x407F, True), (0xC08D, False))
 
 ROOT, FEATURE_SET, FW_VERSION, DEVICE_NAME = 0x0000, 0x0001, 0x0003, 0x0005
-ADJUSTABLE_DPI, REPORT_RATE = 0x2201, 0x8060
+BATTERY_VOLTAGE, ADJUSTABLE_DPI, REPORT_RATE = 0x1001, 0x2201, 0x8060
 COLOR_LED_EFFECTS, ONBOARD_PROFILES, BUTTON_SPY = 0x8070, 0x8100, 0x8110
 
 MODE_ONBOARD, MODE_HOST = 1, 2
 ROM = 0x0100  # memory type 1 = read-only factory profiles
+MIN_WRITE_BATTERY = 10  # % below which a wireless mouse may drop out mid-write
+
+# Battery voltage (mV) to charge (%) for the LIGHTSPEED's Li-ion cell, interpolated
+BATTERY_CURVE = ((4186, 100), (4067, 90), (3989, 80), (3922, 70), (3859, 60), (3811, 50),
+                 (3778, 40), (3751, 30), (3717, 20), (3671, 10), (3646, 5), (3579, 2), (3500, 0))
 
 
 class DeviceNotFound(Exception):
@@ -48,6 +56,24 @@ def parse_dpi_list(payload):
     steps = [v & 0x1FFF for v in values if v >> 13 == 0b111]
     plain = [v for v in values if v >> 13 != 0b111]
     return min(plain), max(plain), (steps[0] if steps else 1)
+
+
+def battery_percent(mv):
+    """Rough charge estimate from the cell voltage."""
+    if mv >= BATTERY_CURVE[0][0]:
+        return 100
+    for (hi_mv, hi), (lo_mv, lo) in zip(BATTERY_CURVE, BATTERY_CURVE[1:]):
+        if mv >= lo_mv:
+            return round(lo + (hi - lo) * (mv - lo_mv) / (hi_mv - lo_mv))
+    return 0
+
+
+@dataclass
+class Battery:
+    millivolts: int
+    percent: int
+    charging: bool
+    full: bool
 
 
 @dataclass
@@ -84,15 +110,18 @@ class LedZone:
 
 
 class G502:
-    def __init__(self, path=None):
-        path = path or find_hidraw(VID, PID)
+    def __init__(self, path=None, wireless=False):
         if not path:
-            raise DeviceNotFound("G502 HERO not found (is it plugged in?)")
+            path, wireless = next(((p, w) for pid, w in PRODUCTS if (p := find_hidraw(VID, pid))),
+                                  (None, False))
+        if not path:
+            raise DeviceNotFound("G502 not found (is it plugged in, or its receiver?)")
         try:
-            self.hidpp = Hidpp(path)
+            self.hidpp = Hidpp(path, any_index=wireless)
         except PermissionError:
             raise NoPermission(f"no permission on {path}: install udev/70-g502-hub.rules") from None
         self.path = path
+        self.wireless = wireless
         self._onboard_info = None
         self._zones = None
         self._lock_fd = None
@@ -138,6 +167,17 @@ class G502:
             prefix = r[1:4].decode(errors="replace").strip("\0 ")
             entities.append((r[0] & 0x0F, f"{prefix} {r[4]:02X}.{r[5]:02X}.B{int.from_bytes(r[6:8], 'big'):04X}"))
         return entities
+
+    def battery(self):
+        """The Battery, or None on a corded mouse without one."""
+        if self.hidpp.feature_index(BATTERY_VOLTAGE) is None:
+            return None
+        r = self._call(BATTERY_VOLTAGE, 0)
+        mv, flags = int.from_bytes(r[0:2], "big"), r[2]
+        # flags bit 7: external power; bits 0-2 then 0 = charging, 1 = full, 2 = slow charging
+        charging = bool(flags & 0x80) and flags & 0x07 in (0, 2)
+        full = bool(flags & 0x80) and flags & 0x07 == 1
+        return Battery(mv, 100 if full else battery_percent(mv), charging, full)
 
     # ------------------------------------------------------------ onboard profiles
 
@@ -250,6 +290,11 @@ class G502:
         sealed = onboard.crc_ok(data)
         if not sealed and not allow_bad_crc:
             raise ValueError("refusing to write a sector with a bad CRC")
+        if self.wireless:
+            # A mouse that dies or drops off the receiver mid-write leaves a half-written sector
+            bat = self.battery()
+            if bat and not (bat.charging or bat.full) and bat.percent < MIN_WRITE_BATTERY:
+                raise IOError(f"battery at {bat.percent}%: charge the mouse before writing to it")
         # A whole-sector write is safe to repeat, so a busy or silent mouse gets two more tries
         for attempt in range(3):
             try:

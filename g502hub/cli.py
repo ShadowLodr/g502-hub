@@ -19,9 +19,10 @@ BUTTON_ALIASES = {"left": "g1", "right": "g2", "middle": "g3", "back": "g4",
                   "forward": "g5", "sniper": "g6"}
 FEATURE_NAMES = {
     0x0000: "Root", 0x0001: "FeatureSet", 0x0003: "DeviceFwVersion",
-    0x0005: "DeviceName", 0x00C2: "DfuControlSigned", 0x1300: "LedControl",
+    0x0005: "DeviceName", 0x0020: "ConfigChange", 0x00C2: "DfuControlSigned", 0x1001: "BatteryVoltage", 0x1300: "LedControl",
     0x1802: "DeviceReset", 0x1806: "ConfigurableDeviceProperties",
     0x1E00: "EnableHiddenFeatures", 0x2201: "AdjustableDpi",
+    0x1D4B: "WirelessDeviceStatus", 0x2121: "HiResWheel",
     0x8060: "AdjustableReportRate", 0x8070: "ColorLedEffects",
     0x8100: "OnboardProfiles", 0x8110: "MouseButtonSpy",
 }
@@ -91,6 +92,9 @@ def cmd_info(dev, args):
     info = dev.onboard_info()
     mode = {MODE_ONBOARD: "onboard", MODE_HOST: "host (software)"}.get(dev.get_mode(), "?")
     print(f"  mode: {mode}")
+    if bat := dev.battery():
+        state = "full" if bat.full else "charging" if bat.charging else "on battery"
+        print(f"  battery: ~{bat.percent}% ({bat.millivolts} mV, {state})")
     if dev.get_mode() == MODE_ONBOARD:
         cur = dev.get_current_profile()
         print(f"  active profile: {'ROM ' if cur >= ROM else ''}slot {cur & 0xFF}, "

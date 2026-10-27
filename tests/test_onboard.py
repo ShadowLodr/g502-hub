@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from g502hub import macro, onboard
-from g502hub.device import parse_dpi_list
+from g502hub.device import battery_percent, parse_dpi_list
 from g502hub.onboard import (Binding, Consumer, Directory, Key, LedEffect, MouseButton,
                              Profile, Special, Unassigned)
 
@@ -143,6 +143,13 @@ def test_rom_directory_parses():
 
 def test_dpi_list_range():
     assert parse_dpi_list(bytes.fromhex("0064e0326400" + "00" * 9)) == (100, 25600, 50)
+
+
+def test_battery_percent():
+    assert battery_percent(4300) == 100
+    assert battery_percent(3811) == 50
+    assert battery_percent(3830) == 54  # between the 50% and 60% points
+    assert battery_percent(3400) == 0
 
 
 def test_macro_round_trip_across_a_jump():
