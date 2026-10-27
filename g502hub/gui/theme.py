@@ -208,6 +208,9 @@ def _icon_path(name):
         p.lineTo(22, 13.5)
         p.lineTo(15, 18)
         p.closeSubpath()
+    elif name == "powerplay":  # the mat with its logo puck
+        p.addRoundedRect(QRectF(2.5, 5, 19, 14), 2.5, 2.5)
+        p.addEllipse(QPointF(17, 9.5), 2, 2)
     elif name == "about":  # i in a circle
         p.addEllipse(QPointF(12, 12), 9, 9)
         p.moveTo(12, 10.5)

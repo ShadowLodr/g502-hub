@@ -18,6 +18,7 @@ VID, PID = 0x046D, 0xC08B
 # receiver (the logitech-dj child node), then the LIGHTSPEED on its charging cable
 PRODUCTS = ((0xC08B, False), (0x407F, True), (0xC08D, False))
 LIGHTSPEED = (0x407F, 0xC08D)
+POWERPLAY_PID = 0x405F  # the mat's own device, next to the mouse on its receiver
 
 ROOT, FEATURE_SET, FW_VERSION, DEVICE_NAME = 0x0000, 0x0001, 0x0003, 0x0005
 BATTERY_VOLTAGE, ADJUSTABLE_DPI, REPORT_RATE = 0x1001, 0x2201, 0x8060
@@ -114,25 +115,10 @@ class LedZone:
         return {1: "primary", 2: "logo"}.get(self.location, f"location-{self.location}")
 
 
-class G502:
-    def __init__(self, path=None, wireless=False):
-        pid = None
-        if not path:
-            path, wireless, pid = next(((p, w, pid) for pid, w in PRODUCTS if (p := find_hidraw(VID, pid))),
-                                       (None, False, None))
-        if not path:
-            raise DeviceNotFound("G502 not found (is it plugged in, or its receiver?)")
-        try:
-            self.hidpp = Hidpp(path, any_index=wireless)
-        except PermissionError:
-            raise NoPermission(f"no permission on {path}: install udev/70-g502-hub.rules") from None
-        self.path = path
-        self.wireless = wireless
-        self.model = "G502 LIGHTSPEED" if wireless or pid in LIGHTSPEED else "G502 HERO"
-        self._onboard_info = None
-        self._zones = None
-        self._lock_fd = None
-        self._lock_depth = 0
+class _LedDevice:
+    """What the G502 and the POWERPLAY mat share: HID++ calls and 0x8070 lighting."""
+
+    _zones = None
 
     def close(self):
         self.hidpp.close()
@@ -148,6 +134,75 @@ class G502:
         if idx is None:
             raise HidppError(0x09, feature_id, function)
         return self.hidpp.request(idx, function, params, **kw)
+
+    def led_zones(self):
+        if self._zones is None:
+            self._zones = []
+            for z in range(self._call(COLOR_LED_EFFECTS, 0)[0]):
+                zi = self._call(COLOR_LED_EFFECTS, 1, [z])
+                effects = {}
+                for e in range(zi[3]):
+                    ei = self._call(COLOR_LED_EFFECTS, 2, [z, e])
+                    effects[int.from_bytes(ei[2:4], "big")] = e
+                self._zones.append(LedZone(z, int.from_bytes(zi[1:3], "big"), effects))
+        return self._zones
+
+    def set_led(self, zone, effect, persistence=0):
+        """Show an LedEffect on a zone right now. persistence 0 = RAM only."""
+        z = self.led_zones()[zone]
+        if effect.effect not in z.effects:
+            raise ValueError(f"zone {zone} has no effect 0x{effect.effect:02X}")
+        params = effect.encode()[1:]
+        if effect.effect == 0x01:
+            params = params[:3] + b"\x02" + params[4:]  # no ramp, as G HUB does for live colors
+        self._call(COLOR_LED_EFFECTS, 3, bytes([zone, z.effects[effect.effect]]) + params + bytes([persistence]))
+
+
+class PowerPlay(_LedDevice):
+    """The POWERPLAY mat's own device on the receiver; all it offers is its logo light."""
+
+    def __init__(self, path):
+        self.hidpp = Hidpp(path, any_index=True)
+        self.path = path
+
+    def get_led(self, zone=0):
+        """The effect the zone shows now (getEffectSettings from RAM; the mat
+        can't do getZoneEffect)."""
+        r = self._call(COLOR_LED_EFFECTS, 9, [zone, 0])
+        ids = {i: e for e, i in self.led_zones()[zone].effects.items()}
+        return onboard.LedEffect.decode(bytes([ids.get(r[1], 0)]) + r[2:12])
+
+
+class G502(_LedDevice):
+    def __init__(self, path=None, wireless=False):
+        pid = None
+        if not path:
+            path, wireless, pid = next(((p, w, pid) for pid, w in PRODUCTS if (p := find_hidraw(VID, pid))),
+                                       (None, False, None))
+        if not path:
+            raise DeviceNotFound("G502 not found (is it plugged in, or its receiver?)")
+        try:
+            self.hidpp = Hidpp(path, any_index=wireless)
+        except PermissionError:
+            raise NoPermission(f"no permission on {path}: install udev/70-g502-hub.rules") from None
+        self.path = path
+        self.wireless = wireless
+        self.model = "G502 LIGHTSPEED" if wireless or pid in LIGHTSPEED else "G502 HERO"
+        self._onboard_info = None
+        self._powerplay = None
+        self._lock_fd = None
+        self._lock_depth = 0
+
+    def close(self):
+        if self._powerplay is not None:
+            self._powerplay.close()
+        super().close()
+
+    def powerplay(self):
+        """The POWERPLAY mat, or None when there's none."""
+        if self._powerplay is None and (path := find_hidraw(VID, POWERPLAY_PID)):
+            self._powerplay = PowerPlay(path)
+        return self._powerplay
 
     # ------------------------------------------------------------ identity
 
@@ -383,28 +438,6 @@ class G502:
         self._call(REPORT_RATE, 2, [ms])
 
     # ------------------------------------------------------------ LEDs
-
-    def led_zones(self):
-        if self._zones is None:
-            self._zones = []
-            for z in range(self._call(COLOR_LED_EFFECTS, 0)[0]):
-                zi = self._call(COLOR_LED_EFFECTS, 1, [z])
-                effects = {}
-                for e in range(zi[3]):
-                    ei = self._call(COLOR_LED_EFFECTS, 2, [z, e])
-                    effects[int.from_bytes(ei[2:4], "big")] = e
-                self._zones.append(LedZone(z, int.from_bytes(zi[1:3], "big"), effects))
-        return self._zones
-
-    def set_led(self, zone, effect, persistence=0):
-        """Show an LedEffect on a zone right now. persistence 0 = RAM only."""
-        z = self.led_zones()[zone]
-        if effect.effect not in z.effects:
-            raise ValueError(f"zone {zone} has no effect 0x{effect.effect:02X}")
-        params = effect.encode()[1:]
-        if effect.effect == 0x01:
-            params = params[:3] + b"\x02" + params[4:]  # no ramp, as G HUB does for live colors
-        self._call(COLOR_LED_EFFECTS, 3, bytes([zone, z.effects[effect.effect]]) + params + bytes([persistence]))
 
     def set_led_software_control(self, on):
         self._call(COLOR_LED_EFFECTS, 8, [1, 1] if on else [0, 0])

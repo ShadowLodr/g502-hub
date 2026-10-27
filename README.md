@@ -121,7 +121,8 @@ protocol G HUB uses.
 
 **Does it support other G502 models?** The wired G502 HERO (USB
 `046d:c08b`) and the G502 LIGHTSPEED, through its receiver (`046d:407f`,
-including the POWERPLAY mat's) or on its cable (`046d:c08d`). Other models
+including the POWERPLAY mat's) or on its cable (`046d:c08d`). The POWERPLAY
+mat's logo light has its own page, and `g502hub powerplay` sets it from a terminal. Other models
 need someone with one to help test; open an issue with your "Copy for a bug
 report" info from the About page.
 

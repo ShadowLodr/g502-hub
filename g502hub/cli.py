@@ -110,6 +110,8 @@ def cmd_info(dev, args):
     zones = ", ".join(f"{z.name}: " + "/".join(onboard.LED_EFFECTS.get(e, hex(e)) for e in z.effects)
                       for z in dev.led_zones())
     print(f"  LED zones: {zones}")
+    if mat := dev.powerplay():
+        print(f"  POWERPLAY mat: logo {mat.get_led().describe()}")
     if args.features:
         print("\n  idx  id      ver  name")
         for idx, fid, flags, ver in dev.features():
@@ -238,6 +240,18 @@ def cmd_led(dev, args):
     Session(dev).edit_profile(args.slot, change)
 
 
+def cmd_powerplay(dev, args):
+    mat = dev.powerplay()
+    if mat is None:
+        raise DeviceNotFound("no POWERPLAY mat found")
+    if args.effect is None:
+        print(f"logo: {mat.get_led().describe()}")
+        return
+    # 1 = RAM and the mat's memory, so it survives a power cut
+    mat.set_led(0, make_led(args), persistence=0 if args.temporary else 1)
+    print(f"logo: {mat.get_led().describe()}" + (" (until the mat loses power)" if args.temporary else ""))
+
+
 def cmd_enable(dev, args, enabled=True):
     directory = dev.read_directory()
     if not 1 <= args.slot <= len(directory.entries):
@@ -344,6 +358,14 @@ def main(argv=None):
         p.add_argument("--period", type=int, default=8000, help="ms (breathing, cycle)")
         p.add_argument("--brightness", type=int, default=100, help="1-100")
         p.set_defaults(func=func)
+
+    p = sub.add_parser("powerplay", help="show or set the POWERPLAY mat's logo light")
+    p.add_argument("effect", nargs="?", choices=["off", "fixed", "breathing", "cycle"])
+    p.add_argument("color", nargs="?", help="RRGGBB")
+    p.add_argument("--period", type=int, default=8000, help="ms (breathing, cycle)")
+    p.add_argument("--brightness", type=int, default=100, help="1-100")
+    p.add_argument("--temporary", action="store_true", help="don't save it in the mat")
+    p.set_defaults(func=cmd_powerplay)
 
     for name, enabled in (("enable", True), ("disable", False)):
         p = sub.add_parser(name, help=f"{name} a slot for profile cycling")

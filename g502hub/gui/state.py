@@ -6,6 +6,7 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTime
 
 from .. import backup, onboard, settings
 from ..device import MODE_ONBOARD, ROM, DeviceNotFound, G502, NoPermission
+from ..hidpp import HidppError
 
 SAVE_DELAY_MS = 700
 POLL_MS = 250
@@ -93,6 +94,8 @@ class MouseState(QObject):
         self.model = "G502"
         self.wireless = False
         self.battery = None  # device.Battery, on the wireless mouse
+        self.mat_led = None  # the POWERPLAY mat's logo LedEffect, when there's a mat
+        self._mat_pending = None
         self._battery_at = 0.0
         self.name = ""
         self.firmware = []
@@ -119,6 +122,8 @@ class MouseState(QObject):
         self._poll_timer.timeout.connect(self._poll)
         self._led_timer = QTimer(self, singleShot=True, interval=40)
         self._led_timer.timeout.connect(self._send_led_preview)
+        self._mat_timer = QTimer(self, singleShot=True, interval=40)
+        self._mat_timer.timeout.connect(lambda: self._send_mat_led(self._mat_pending, persistence=0))
 
     # ------------------------------------------------------------ loading
 
@@ -140,6 +145,7 @@ class MouseState(QObject):
             rom = onboard.Directory.decode(dev.read_sector(ROM))
             return {
                 "model": dev.model, "wireless": dev.wireless, "battery": dev.battery(),
+                "mat_led": _mat_led(dev),
                 "name": dev.name(), "firmware": dev.firmware(), "info": dev.onboard_info(),
                 "zones": dev.led_zones(), "dpi_range": dev.dpi_range(),
                 "intervals": dev.report_intervals(), "directory": directory,
@@ -170,7 +176,7 @@ class MouseState(QObject):
                 self.status.emit("info", str(error) if isinstance(error, DeviceNotFound)
                                  else "Mouse disconnected")
             return
-        for key in ("model", "wireless", "battery", "name", "firmware", "info", "zones", "dpi_range",
+        for key in ("model", "wireless", "battery", "mat_led", "name", "firmware", "info", "zones", "dpi_range",
                     "intervals", "directory", "profiles", "factory", "dpi_index", "pages"):
             setattr(self, key, data[key])
         self._battery_at = time.monotonic()
@@ -422,6 +428,22 @@ class MouseState(QObject):
         if self.connected:
             self.bridge.call(job)
 
+    def set_mat_led(self, effect, final):
+        """Light the POWERPLAY mat's logo: throttled while dragging, saved in the mat when final."""
+        self.mat_led = effect
+        if not final:
+            self._mat_pending = effect
+            if not self._mat_timer.isActive():
+                self._mat_timer.start()
+            return
+        self._mat_timer.stop()
+        self._send_mat_led(effect, persistence=1, done=lambda _, e: self.status.emit(
+            "error" if e else "ok", f"POWERPLAY: {e}" if e else "Saved to the POWERPLAY"))
+
+    def _send_mat_led(self, effect, persistence, done=None):
+        if self.connected:
+            self.bridge.call(lambda dev: dev.powerplay().set_led(0, effect, persistence), done)
+
     def preview_dpi(self, dpi):
         if self.connected:
             self.bridge.call(lambda dev: dev.set_dpi(dpi))
@@ -449,3 +471,12 @@ class MouseState(QObject):
         self.flush()
         self.bridge.wait_idle()
         self.bridge.stop()
+
+
+def _mat_led(dev):
+    """The POWERPLAY mat's logo effect, or None; a mat that misbehaves mustn't stop the mouse loading."""
+    try:
+        mat = dev.powerplay()
+        return mat.get_led() if mat else None
+    except (OSError, HidppError):
+        return None

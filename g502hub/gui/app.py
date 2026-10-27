@@ -22,6 +22,7 @@ from .pages.assignments import AssignmentsPage
 from .pages.games import GamesPage
 from .pages.macros import MacrosPage
 from .pages.lighting import LightingPage
+from .pages.powerplay import PowerplayPage
 from .pages.profiles import ProfilesPage
 from .pages.sensitivity import SensitivityPage
 from .pages.settings import SettingsPage
@@ -81,7 +82,7 @@ class MainWindow(QMainWindow):
         args = (self.state, self.view, self.keylabels)
         self.pages = [LightingPage(*args, self.live), AssignmentsPage(*args, self.macros), SensitivityPage(*args),
                       ProfilesPage(*args), MacrosPage(*args, self.macros), GamesPage(*args, self.rules),
-                      SettingsPage(*args), AboutPage(*args)]
+                      PowerplayPage(*args), SettingsPage(*args), AboutPage(*args)]
         bottom = {SettingsPage, AboutPage}  # pinned to the bottom of the rail, like G HUB's gear
 
         rail = QWidget()
@@ -146,6 +147,8 @@ class MainWindow(QMainWindow):
         self.placeholder.fix.clicked.connect(self._fix_permissions)
         macros_page = next(i for i, p in enumerate(self.pages) if isinstance(p, MacrosPage))
         self.pages[1].open_macros = lambda: self.rail_group.button(macros_page).click()
+        self.rail_group.button(next(i for i, p in enumerate(self.pages)
+                                    if isinstance(p, PowerplayPage))).hide()  # until a mat shows up
         self.rail_group.button(0).setChecked(True)
         self.show_page(0)
         self._connected(False)
@@ -213,6 +216,8 @@ class MainWindow(QMainWindow):
 
     def _loaded(self):
         self.model_label.setText(self.state.model)
+        mat = next(i for i, p in enumerate(self.pages) if isinstance(p, PowerplayPage))
+        self.rail_group.button(mat).setVisible(self.state.mat_led is not None)
         self._show_battery()
         self._fill_profile_box()
         self._shown_slot = self.state.active_slot

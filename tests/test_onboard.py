@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from g502hub import macro, onboard
-from g502hub.device import G502, battery_percent, parse_dpi_list
+from g502hub.device import G502, LedZone, PowerPlay, battery_percent, parse_dpi_list
 from g502hub.onboard import (Binding, Consumer, Directory, Key, LedEffect, MouseButton,
                              Profile, Special, Unassigned)
 
@@ -177,3 +177,10 @@ def test_macro_round_trip_across_a_jump():
 def test_macro_describe():
     assert macro.describe(("key-down", 0x01, 0x06)) == "key-down ctrl+c"
     assert macro.describe(("delay", 30)) == "delay 30 ms"
+
+
+def test_powerplay_led_from_effect_settings():
+    mat = PowerPlay.__new__(PowerPlay)
+    mat._zones = [LedZone(0, 2, {0x00: 0, 0x01: 1, 0x03: 2, 0x0A: 3})]  # as the real mat reports
+    mat._call = lambda *a: bytes.fromhex("00010055ff").ljust(16, b"\0")  # zone 0, index 1 = fixed
+    assert mat.get_led().describe() == "fixed #0055ff"
