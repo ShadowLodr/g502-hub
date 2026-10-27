@@ -206,11 +206,12 @@ class G502(_LedDevice):
 
     # ------------------------------------------------------------ identity
 
-    def ping(self, timeout=0.3):
+    def ping(self, timeout=0.5):
         """Raise DeviceAsleep unless the mouse answers quickly; the receiver can't
-        tell us whether it is awake, so ask the mouse itself."""
+        tell us whether it is awake, so ask the mouse itself. Once more after a miss:
+        over the radio a reply now and then comes late or not at all."""
         try:
-            self.hidpp.request(0, 1, [0, 0, 0x5A], timeout=timeout, retries=0)
+            self.hidpp.request(0, 1, [0, 0, 0x5A], timeout=timeout, retries=1)
         except (TimeoutError, HidppError):
             raise DeviceAsleep(f"{self.model} is asleep or switched off. Move it to wake it up.") from None
 
