@@ -87,7 +87,7 @@ class SlotCard(Card):
         if not path.endswith(sharing.SUFFIX):
             path += sharing.SUFFIX
         try:
-            Path(path).write_text(sharing.export(profile))
+            Path(path).write_text(sharing.export(profile, self.page.state.model))
         except OSError as e:
             QMessageBox.warning(self, "Export profile", f"Couldn't save the file: {e}")
             return
@@ -99,7 +99,7 @@ class SlotCard(Card):
         if not path:
             return
         try:
-            profile, notes = sharing.load(Path(path).read_text())
+            profile, notes = sharing.load(Path(path).read_text(), self.page.state.model)
         except (OSError, UnicodeDecodeError, sharing.ShareError) as e:
             QMessageBox.warning(self, "Import profile", f"Couldn't import {Path(path).name}: {e}")
             return

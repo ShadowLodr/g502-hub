@@ -6,15 +6,19 @@ from . import __version__, onboard
 
 FORMAT = "g502-hub-profile"
 VERSION = 1
-DEVICE = "046d:c08b"
+# Files say which model they were made on; both use the same profile layout, so
+# either imports either (the LIGHTSPEED's ID is its receiver one, cable or not)
+DEVICES = {"G502 HERO": "046d:c08b", "G502 LIGHTSPEED": "046d:407f"}
+DEVICE = DEVICES["G502 HERO"]
 SUFFIX = ".g502profile"
+BATTERY = 0x0C  # special function only the LIGHTSPEED has
 
 
 class ShareError(ValueError):
     pass
 
 
-def export(profile):
+def export(profile, model="G502 HERO"):
     """A JSON text for one onboard profile."""
     data = profile.encode()
     summary = {
@@ -27,13 +31,14 @@ def export(profile):
         "buttons": [b.describe() for b in profile.buttons[:11]],
         "gshift": [b.describe() for b in profile.gshift[:11]],
     }
-    return json.dumps({"format": FORMAT, "version": VERSION, "device": DEVICE,
+    return json.dumps({"format": FORMAT, "version": VERSION, "device": DEVICES[model],
                        "app": f"G502 Hub {__version__}", "summary": summary,
                        "sector": data.hex()}, indent=2) + "\n"
 
 
-def load(text):
-    """(Profile, notes) from an exported file. Notes explain anything that was changed."""
+def load(text, model="G502 HERO"):
+    """(Profile, notes) from an exported file, for a `model` mouse. Notes explain
+    anything that was changed."""
     try:
         doc = json.loads(text)
     except ValueError as e:
@@ -42,8 +47,9 @@ def load(text):
         raise ShareError("not a G502 Hub profile file")
     if doc.get("version", 0) > VERSION:
         raise ShareError("made by a newer version of G502 Hub; update to import it")
-    if doc.get("device") != DEVICE:
-        raise ShareError(f"made for another device ({doc.get('device')}), not the G502 HERO")
+    made_on = next((m for m, device in DEVICES.items() if device == doc.get("device")), None)
+    if made_on is None:
+        raise ShareError(f"made for another device ({doc.get('device')}), not a G502 HERO or LIGHTSPEED")
     try:
         data = bytes.fromhex(doc["sector"])
     except (KeyError, TypeError, ValueError):
@@ -58,4 +64,10 @@ def load(text):
             if isinstance(b, onboard.Macro):
                 bindings[i] = onboard.Disabled()
                 notes.append(f"{layer}button {i + 1} had a macro, which can't be shared, so it's disabled")
+            elif model != "G502 LIGHTSPEED" and isinstance(b, onboard.Special) and b.function == BATTERY:
+                bindings[i] = onboard.Disabled()
+                notes.append(f"{layer}button {i + 1} showed the battery level, which the {model} "
+                             "doesn't have, so it's disabled")
+    if made_on != model:
+        notes.insert(0, f"Made on a {made_on}; the settings carry over to the {model}")
     return profile, notes
