@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from . import onboard
-from .hidpp import ERR_BUSY, ERR_HARDWARE, Hidpp, HidppError, find_hidraw
+from .hidpp import ERR_BUSY, ERR_HARDWARE, ERR_INVALID_ARGUMENT, Hidpp, HidppError, find_hidraw
 
 VID, PID = 0x046D, 0xC08B
 # (product id, wireless) in lookup order: the HERO, then the LIGHTSPEED through its
@@ -241,6 +241,9 @@ class G502:
         Selecting the profile that is already active does nothing, so hop to
         another slot and straight back (factory profiles can't be selected).
         Afterwards go to DPI level `dpi_index`, or back to the one the user was on.
+
+        The LIGHTSPEED refuses to select disabled slots, but applies writes to the
+        active profile by itself, so with no slot to hop through there is nothing to do.
         """
         current = self.get_current_profile()
         if dpi_index is None:
@@ -250,7 +253,15 @@ class G502:
                  [e.sector for e in entries if e.sector != current and not e.enabled]
         if not others:
             raise IOError("no other profile slot to reload through")
-        self.set_current_profile(others[0])
+        for sector in others:
+            try:
+                self.set_current_profile(sector)
+                break
+            except HidppError as e:
+                if e.code != ERR_INVALID_ARGUMENT:
+                    raise
+        else:
+            return
         self.set_current_profile(current)
         # Loading resets to the default DPI level; keep the one the user was on
         if dpi_index < len(self.read_profile(current).dpi_levels()):
