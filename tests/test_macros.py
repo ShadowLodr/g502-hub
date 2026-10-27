@@ -308,8 +308,8 @@ def test_device_key_coverage():
 
 # ------------------------------------------------------------ button spy (a pipe stands in for hidraw)
 
-def spy_event(mask, index=9):
-    return bytes([0x10, 0xFF, index, 0x00]) + mask.to_bytes(2, "big") + b"\x00"
+def spy_event(mask, index=9, device=0xFF):
+    return bytes([0x10, device, index, 0x00]) + mask.to_bytes(2, "big") + b"\x00"
 
 
 def test_spy_parse_ignores_replies_and_other_features():
@@ -319,6 +319,12 @@ def test_spy_parse_ignores_replies_and_other_features():
     assert spy.parse(data, 9) == ([0x0001, 0x0021], b"")
     assert spy.parse(spy_event(1)[:4], 9) == ([], spy_event(1)[:4])
     assert spy.parse(b"\x01\x02\x03", 9) == ([], b"")
+
+
+def test_spy_parse_through_a_receiver():
+    data = spy_event(0x0004, device=0x01)
+    assert spy.parse(data, 9) == ([], b"")             # corded: only index 0xFF
+    assert spy.parse(data, 9, None) == ([0x0004], b"")
 
 
 def test_spy_reports_changes_from_a_pipe():
