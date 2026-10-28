@@ -11,6 +11,7 @@ import colorsys
 import json
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -136,6 +137,9 @@ class GameStateServer:
 def _steam_root(root=None):
     if root is not None:
         return Path(root)
+    if sys.platform == "win32":
+        from ..context import steam_root
+        return steam_root() or Path(r"C:\Program Files (x86)\Steam")
     return next((r for r in STEAM_ROOTS if (r / "steamapps").is_dir()), STEAM_ROOTS[0])
 
 

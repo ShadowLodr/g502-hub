@@ -7,6 +7,7 @@ What shows, highest first: a rule's lighting (set_override), the live effect
 the user turned on, the lighting saved on the mouse.
 """
 
+import sys
 import time
 
 import numpy as np
@@ -191,7 +192,10 @@ class LiveLighting(QObject):
             self.audio.stop()
             self.audio = None
         if want["screen"] and self.screen is None:
-            from ..effects.screen import ScreenCapture
+            if sys.platform == "win32":
+                from ..effects.winscreen import ScreenCapture
+            else:
+                from ..effects.screen import ScreenCapture
             self.screen = ScreenCapture(restore_token=settings.load().get("screen_token"), fps=FPS)
             self._screen_state = None
             self.screen.start()

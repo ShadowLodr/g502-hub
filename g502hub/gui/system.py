@@ -28,6 +28,10 @@ AUTOSTART = CONFIG / "autostart" / "g502-hub.desktop"
 def launch_command(*args):
     """The command that starts this app, whether installed or run from a checkout."""
     root = Path(g502hub.__file__).resolve().parent.parent
+    if sys.platform == "win32":  # pythonw: no console window; no `env`, so put the checkout on sys.path
+        exe = Path(sys.executable).with_name("pythonw.exe")
+        boot = f"import sys; sys.path.insert(0, {str(root)!r}); from g502hub.gui.app import main; main()"
+        return [str(exe if exe.exists() else sys.executable), "-c", boot, *args]
     cmd = [sys.executable, "-m", "g502hub.gui", *args]
     if (root / "pyproject.toml").exists():  # a source checkout, not an installed package
         cmd = ["env", f"PYTHONPATH={root}", *cmd]
@@ -36,11 +40,34 @@ def launch_command(*args):
 
 # ------------------------------------------------------------ start at login
 
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
 def autostart_enabled():
+    if sys.platform == "win32":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+                winreg.QueryValueEx(key, "G502 Hub")
+            return True
+        except OSError:
+            return False
     return AUTOSTART.exists()
 
 
 def set_autostart(on):
+    if sys.platform == "win32":
+        import subprocess
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if on:
+                winreg.SetValueEx(key, "G502 Hub", 0, winreg.REG_SZ, subprocess.list2cmdline(launch_command("--tray")))
+            else:
+                try:
+                    winreg.DeleteValue(key, "G502 Hub")
+                except FileNotFoundError:
+                    pass
+        return
     if not on:
         AUTOSTART.unlink(missing_ok=True)
         return
@@ -62,6 +89,8 @@ X-KDE-autostart-after=panel
 
 def show_osd(text, icon="input-mouse"):
     """Plasma's own volume-style popup; does nothing elsewhere."""
+    if sys.platform == "win32":
+        return False
     from PySide6.QtDBus import QDBusConnection, QDBusMessage
     bus = QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -76,6 +105,8 @@ def show_osd(text, icon="input-mouse"):
 
 def udev_rule_status():
     """"current", "old" (a rule from an earlier version) or "missing"."""
+    if sys.platform == "win32":
+        return "current"  # Windows lets any user open the mouse; there is no rule to install
     status = "missing"
     for path in (UDEV_RULE_PATH, PACKAGED_RULE_PATH):
         try:
@@ -124,7 +155,8 @@ def session_info():
     try:
         kernel = os.uname().release
     except AttributeError:
-        kernel = "?"
+        import platform
+        kernel = platform.platform()
     return [
         f"G502 Hub {g502hub.__version__}",
         f"Python {sys.version.split()[0]}, Qt {qVersion()}, PySide6 {pyside_version}",

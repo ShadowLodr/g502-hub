@@ -4,6 +4,7 @@ The device is python-evdev's UInput on /dev/uinput, created on the first play.
 Each playing macro has its own thread; stopping one releases whatever it holds.
 """
 
+import sys
 import threading
 import time
 
@@ -145,7 +146,11 @@ class MacroPlayer:
     def _device(self):
         if self._backend is None:
             try:
-                self._backend = _UInputBackend()
+                if sys.platform == "win32":
+                    from .winput import SendInputBackend
+                    self._backend = SendInputBackend()
+                else:
+                    self._backend = _UInputBackend()
                 self.state = "ready"
             except Exception as e:  # no evdev, or /dev/uinput not writable
                 self.state = "error"

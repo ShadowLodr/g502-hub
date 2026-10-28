@@ -3,17 +3,34 @@
 Function numbers and payloads come from docs/protocol.md.
 """
 
-import fcntl
 import functools
 import os
+import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 from . import onboard
-from .hidpp import ERR_BUSY, ERR_HARDWARE, Hidpp, HidppError, find_hidraw
+from .hidpp import CORDED, ERR_BUSY, ERR_HARDWARE, Hidpp, HidppError, find_hidraw
 
 VID, PID = 0x046D, 0xC08B
+# The G502 LIGHTSPEED keeps the same profile layout (format 3, byte for byte the HERO's format 2):
+# by cable it is a device of its own, wirelessly it is device 1 behind a Lightspeed receiver
+CORDED_PIDS = (0xC08B, 0xC08D)
+RECEIVER_PIDS = (0xC539, 0xC53A, 0xC53F, 0xC547)
+WIRELESS_INDEX = 1
+
+
+def find_mouse():
+    """(path, device index) of the first G502 found, or (None, None)."""
+    for pid in CORDED_PIDS:
+        if path := find_hidraw(VID, pid):
+            return path, CORDED
+    for pid in RECEIVER_PIDS:
+        if path := find_hidraw(VID, pid):
+            return path, WIRELESS_INDEX
+    return None, None
 
 ROOT, FEATURE_SET, FW_VERSION, DEVICE_NAME = 0x0000, 0x0001, 0x0003, 0x0005
 ADJUSTABLE_DPI, REPORT_RATE = 0x2201, 0x8060
@@ -21,6 +38,26 @@ COLOR_LED_EFFECTS, ONBOARD_PROFILES, BUTTON_SPY = 0x8070, 0x8100, 0x8110
 
 MODE_ONBOARD, MODE_HOST = 1, 2
 ROM = 0x0100  # memory type 1 = read-only factory profiles
+
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock(fd):
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd):
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock(fd):
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd):
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class DeviceNotFound(Exception):
@@ -84,14 +121,23 @@ class LedZone:
 
 
 class G502:
-    def __init__(self, path=None):
-        path = path or find_hidraw(VID, PID)
+    def __init__(self, path=None, index=CORDED):
         if not path:
-            raise DeviceNotFound("G502 HERO not found (is it plugged in?)")
+            path, index = find_mouse()
+        if not path:
+            raise DeviceNotFound("G502 not found (is it plugged in?)")
         try:
-            self.hidpp = Hidpp(path)
+            self.hidpp = Hidpp(path, index)
+            if index != CORDED:
+                try:
+                    self.hidpp.protocol_version()
+                except (TimeoutError, HidppError):
+                    self.hidpp.close()
+                    raise DeviceNotFound("Receiver found, but the mouse isn't answering (off or asleep? "
+                                         "click a button)") from None
         except PermissionError:
-            raise NoPermission(f"no permission on {path}: install udev/70-g502-hub.rules") from None
+            raise NoPermission(f"no permission on {path}: " + ("quit Logitech G HUB" if sys.platform == "win32"
+                               else "install udev/70-g502-hub.rules")) from None
         self.path = path
         self._onboard_info = None
         self._zones = None
@@ -174,15 +220,15 @@ class G502:
         """
         if self._lock_depth == 0:
             if self._lock_fd is None:
-                runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/g502-hub-{os.getuid()}"
+                runtime = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(tempfile.gettempdir(), "g502-hub")
                 os.makedirs(runtime, exist_ok=True)
                 self._lock_fd = os.open(os.path.join(runtime, "g502-hub.lock"), os.O_RDWR | os.O_CREAT, 0o600)
             deadline = time.monotonic() + timeout
             while True:
                 try:
-                    fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    _lock(self._lock_fd)
                     break
-                except BlockingIOError:
+                except (BlockingIOError, PermissionError):  # Windows says PermissionError when it's held
                     if time.monotonic() > deadline:
                         raise IOError("another program is busy with the mouse; try again") from None
                     time.sleep(0.02)
@@ -192,7 +238,7 @@ class G502:
         finally:
             self._lock_depth -= 1
             if self._lock_depth == 0:
-                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                _unlock(self._lock_fd)
 
     @_exclusive
     def reload_current_profile(self, dpi_index=None):

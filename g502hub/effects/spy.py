@@ -1,9 +1,9 @@
 """Listens for Mouse Button Spy (HID++ 0x8110) events on a hidraw node of its own."""
 
-import os
-import select
 import threading
 from collections import deque
+
+from ..hidpp import RawHid
 
 SIZES = {0x10: 7, 0x11: 20}  # HID++ short and long reports
 
@@ -36,11 +36,11 @@ class ButtonSpy:
     (device.G502.spy_start/spy_stop); this only listens.
     """
 
-    def __init__(self, path, feature_index, device_index=0xFF, fd=None):
+    def __init__(self, path, feature_index, device_index=0xFF, raw=None):
         self.path, self.feature_index, self.device_index = path, feature_index, device_index
         self.state = "idle"
         self.error = None
-        self._fd, self._own_fd = fd, fd is None
+        self._raw, self._own_raw = raw, raw is None
         self._mask = 0
         self._changes = deque(maxlen=256)
         self._lock = threading.Lock()
@@ -51,8 +51,8 @@ class ButtonSpy:
         if self._thread is not None:
             return
         try:
-            if self._fd is None:
-                self._fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+            if self._raw is None:
+                self._raw = RawHid(self.path)
         except OSError as e:
             self.state, self.error = "error", f"can't open {self.path}: {e}"
             return
@@ -66,9 +66,9 @@ class ButtonSpy:
         if self._thread is not None:
             self._thread.join(1.0)
             self._thread = None
-        if self._own_fd and self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
+        if self._own_raw and self._raw is not None:
+            self._raw.close()
+            self._raw = None
         if self.state == "running":
             self.state = "idle"
 
@@ -83,18 +83,12 @@ class ButtonSpy:
         rest = b""
         while not self._stop.is_set():
             try:
-                ready, _, _ = select.select([self._fd], [], [], 0.1)
-                if not ready:
-                    continue
-                data = os.read(self._fd, 64)
-            except BlockingIOError:
-                continue
+                data = self._raw.read(0.1)
             except OSError as e:  # unplugged
                 self.state, self.error = "error", str(e)
                 return
-            if not data:
-                self.state, self.error = "error", "the device went away"
-                return
+            if data is None:
+                continue
             masks, rest = parse(rest + data, self.feature_index, self.device_index)
             for mask in masks:
                 if mask != self._mask:
