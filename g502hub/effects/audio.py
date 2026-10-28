@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -138,6 +139,9 @@ class AudioMonitor:
         with self._lock:
             if self.state == "running":
                 return
+            if sys.platform == "win32":
+                self._start_loopback()
+                return
             parec = shutil.which("parec")
             if parec is None:
                 self.state, self.error = "error", "parec not found (install libpulse)"
@@ -183,6 +187,38 @@ class AudioMonitor:
         if beat != levels.beat:
             levels = Levels(levels.level, levels.bass, levels.mid, levels.treble, levels.centroid, beat)
         return levels
+
+    def _start_loopback(self):
+        """Windows: WASAPI loopback of the default output through the soundcard package."""
+        try:
+            import soundcard
+        except ImportError:
+            self.state, self.error = "error", "the soundcard package is missing (pip install soundcard)"
+            return
+        self._stopping = False
+        self._levels, self._beat = None, False
+        self.state, self.error = "running", None
+        self._thread = threading.Thread(target=self._read_loopback, args=(soundcard,), daemon=True,
+                                        name="g502hub-audio")
+        self._thread.start()
+
+    def _read_loopback(self, soundcard):
+        analyzer = Analyzer(self.rate)
+        try:
+            mic = soundcard.get_microphone(soundcard.default_speaker().name, include_loopback=True)
+            with mic.recorder(samplerate=self.rate, channels=1, blocksize=512) as rec:
+                while not self._stopping:
+                    chunk = rec.record(numframes=512)[:, 0]
+                    levels = analyzer.feed(chunk)
+                    if levels is not None:
+                        with self._lock:
+                            self._levels = levels
+                            self._beat = self._beat or levels.beat
+                            self._updated = time.monotonic()
+        except Exception as e:
+            with self._lock:
+                if not self._stopping:
+                    self.state, self.error = "error", f"audio loopback failed: {e}"
 
     def _read(self, proc):
         analyzer = Analyzer(self.rate)

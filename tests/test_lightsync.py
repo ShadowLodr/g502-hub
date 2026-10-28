@@ -1,3 +1,4 @@
+import sys
 import ctypes
 import os
 import re
@@ -372,6 +373,7 @@ def prefix(tmp_path, monkeypatch):
     return make
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_install_uninstall_round_trip(prefix):
     pfx = prefix()
     original = (pfx / "system.reg").read_bytes()
@@ -458,6 +460,7 @@ def test_install_needs_the_built_dlls(prefix, tmp_path, monkeypatch):
     assert not (pfx / "drive_c/Program Files").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_prefix_in_use_sees_wine_processes(tmp_path):
     pfx = tmp_path / "pfx"
     pfx.mkdir()

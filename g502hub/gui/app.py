@@ -261,6 +261,15 @@ class MainWindow(QMainWindow):
         self.live_dpi.setVisible(bool(profile and s.dpi_index in levels))
 
     def _warn_ratbagd(self):
+        if sys.platform == "win32":
+            try:
+                out = subprocess.run(["tasklist", "/fi", "imagename eq lghub_agent.exe", "/nh"], capture_output=True,
+                                     text=True, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+            except OSError:
+                out = ""
+            if "lghub_agent" in out.lower():
+                self._status("error", "Logitech G HUB is running and holds the mouse. Quit it from its tray icon.")
+            return
         try:
             running = subprocess.run(["pgrep", "-x", "ratbagd"], capture_output=True).returncode == 0
         except OSError:
@@ -358,7 +367,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
-INSTANCE = f"g502-hub-{os.getuid()}"
+INSTANCE = f"g502-hub-{os.getuid() if hasattr(os, 'getuid') else os.getlogin()}"
 
 
 def _hand_over(message):
@@ -391,7 +400,11 @@ def _listen(window):
 
 
 def main():
+    if sys.platform == "win32":  # our own taskbar entry and icon instead of Python's
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("G502Hub.G502Hub")
     app = QApplication(sys.argv)
+    app.setWindowIcon(theme.icon("assignments", theme.ACCENT, theme.ACCENT, 128))
     tray_only = "--tray" in sys.argv[1:]
     if _hand_over(b"tray" if tray_only else b"show"):
         sys.exit(0)

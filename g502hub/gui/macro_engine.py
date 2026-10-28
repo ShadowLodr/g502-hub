@@ -174,7 +174,7 @@ class MacroEngine(QObject):
 
         def job(dev):
             dev.spy_start()
-            return dev.path, dev.hidpp.feature_index(SPY_FEATURE)
+            return dev.path, dev.hidpp.feature_index(SPY_FEATURE), dev.hidpp.index
 
         def started(result, error):
             self._starting = False

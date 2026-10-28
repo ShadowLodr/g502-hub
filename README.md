@@ -38,6 +38,23 @@ Debian/Ubuntu package names in the installer are best effort; reports welcome.
 Close Piper / ratbagd while using G502 Hub: ratbagd overwrites the mouse's
 G-Shift layer whenever it saves.
 
+## Windows
+
+Needs Python 3.11+ from python.org. In this folder:
+
+```bat
+pip install hidapi PySide6 numpy soundcard
+"G502 Hub.bat"
+```
+
+**Quit Logitech G HUB first** (and stop it starting with Windows): it holds the mouse
+and rewrites its settings. Everything on the mouse works as on Linux. The live and
+rule features use Windows equivalents: the screen sampler grabs the primary monitor,
+the audio visualizer listens to the default output (WASAPI loopback), rules see the
+focused window and the running Steam game, and app-run macros type with SendInput.
+Not on Windows yet: media-player rules (no MPRIS; match on the browser's window title
+instead), the DPI/profile popup, and the Proton LightSync bridge.
+
 ## What it does
 
 **Lightsync**

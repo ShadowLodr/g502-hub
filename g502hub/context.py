@@ -9,6 +9,7 @@ Three sources, each allowed to fail on its own (see ContextWatcher.errors):
 import asyncio
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -79,6 +80,9 @@ def parse_vdf(text):
 
 
 def steam_root(home=None):
+    if sys.platform == "win32" and home is None:
+        path = _steam_registry("SteamPath")
+        return Path(path).resolve() if path and (Path(path) / "steamapps").is_dir() else None
     home = Path(home or Path.home())
     for candidate in (home / ".local/share/Steam", home / ".steam/steam", home / ".steam/root"):
         if (candidate / "steamapps").is_dir():
@@ -228,7 +232,7 @@ class SteamScanner:
     def __init__(self, proc="/proc", root=None, uid=None):
         self.proc = Path(proc)
         self.root = root
-        self.uid = os.getuid() if uid is None else uid
+        self.uid = (os.getuid() if hasattr(os, "getuid") else None) if uid is None else uid
         self._seen = {}  # pid -> (appid, is_shortcut) or None
         self._names = {}
         self._art = {}
@@ -347,6 +351,40 @@ def _context_interface(on_window):
     return ContextInterface()
 
 
+def _steam_registry(name):
+    """A value under HKCU/Software/Valve/Steam, or None (Windows only)."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+
+def foreground_window():
+    """(app, title, pid) of the focused window, app being the exe name like KWin's resource class."""
+    import ctypes
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return "", "", None
+    title = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, title, 512)
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    app = ""
+    proc = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if proc:
+        path, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        if kernel32.QueryFullProcessImageNameW(proc, 0, path, ctypes.byref(size)):
+            app = Path(path.value).stem.lower()
+        kernel32.CloseHandle(wintypes.HANDLE(proc))
+    return app, title.value, pid.value or None
+
+
 class ContextWatcher:
     """Collects the context in background threads; current() is a cheap snapshot."""
 
@@ -369,7 +407,8 @@ class ContextWatcher:
         if self._threads:
             return
         self._stop.clear()
-        for target in (self._dbus_thread, self._steam_thread):
+        targets = (self._windows_thread,) if sys.platform == "win32" else (self._dbus_thread, self._steam_thread)
+        for target in targets:
             t = threading.Thread(target=target, daemon=True, name=f"g502hub-{target.__name__}")
             t.start()
             self._threads.append(t)
@@ -413,6 +452,23 @@ class ContextWatcher:
             except Exception as e:  # keep scanning; report why
                 self._error("steam", f"{type(e).__name__}: {e}")
             self._stop.wait(STEAM_SCAN_S)
+
+    # ------------------------------------------------------------ Windows
+
+    def _windows_thread(self):
+        """Polls the focused window and Steam's RunningAppID; Windows has no MPRIS, so no media."""
+        self._error("mpris", "media players aren't followed on Windows")
+        while not self._stop.is_set():
+            try:
+                window = foreground_window()
+                appid = _steam_registry("RunningAppID") or 0
+                running = {(appid, False): [(0, None)]} if appid and not self._scanner._skip(appid, False) else {}
+                with self._lock:
+                    self._window, self._running = window, running
+                self._error("window", None)
+            except Exception as e:  # keep polling; report why
+                self._error("window", f"{type(e).__name__}: {e}")
+            self._stop.wait(0.5)
 
     # ------------------------------------------------------------ D-Bus
 

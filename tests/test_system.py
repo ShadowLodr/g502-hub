@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ def test_embedded_udev_rule_matches_the_repository_file():
     assert system.UDEV_RULE == (Path(__file__).parent.parent / "udev/70-g502-hub.rules").read_text()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_udev_rule_status(tmp_path, monkeypatch):
     etc, lib = tmp_path / "etc.rules", tmp_path / "lib.rules"
     monkeypatch.setattr(system, "UDEV_RULE_PATH", str(etc))
@@ -21,6 +23,7 @@ def test_udev_rule_status(tmp_path, monkeypatch):
     assert system.udev_rule_status() == "current"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_autostart_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(system, "AUTOSTART", tmp_path / "autostart" / "g502-hub.desktop")
     system.set_autostart(True)

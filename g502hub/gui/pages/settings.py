@@ -1,6 +1,7 @@
 """SETTINGS page: startup, on-screen popups, mouse picture, device access, game integrations."""
 
 import os
+import sys
 
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -141,6 +142,9 @@ class SettingsPage(Page):
         self._show_games()
 
     def _show_bridge(self):
+        if sys.platform == "win32":  # the bridge goes into Proton prefixes; native games have G HUB's SDK
+            self.bridge.hide()
+            return
         while self.bridge_col.count():
             item = self.bridge_col.takeAt(0)
             if item.widget():

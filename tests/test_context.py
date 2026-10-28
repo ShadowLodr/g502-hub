@@ -1,3 +1,4 @@
+import sys
 import os
 from pathlib import Path
 
@@ -79,6 +80,7 @@ def test_parse_environ(env, expected):
     assert context.parse_environ(blob) == expected
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_scanner_finds_games_skips_tools_and_prunes(tmp_path):
     root = fake_steam(tmp_path)
     write(root / "steamapps/appmanifest_291550.acf", manifest(291550, "Brawlhalla"))
@@ -102,6 +104,7 @@ def test_scanner_finds_games_skips_tools_and_prunes(tmp_path):
     assert scanner.scan() == {}
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_scanner_ignores_other_users(tmp_path):
     proc = tmp_path / "proc"
     fake_proc(proc, 20, {"SteamAppId": "570"})
@@ -136,16 +139,16 @@ def test_find_art_prefers_wide_images(tmp_path):
     cache = root / "appcache/librarycache"
     write(cache / "7/library_600x900.jpg", b"x")
     write(cache / "7/abc123/library_header.jpg", b"x")
-    assert context.find_art(7, root).endswith("abc123/library_header.jpg")
+    assert Path(context.find_art(7, root)).as_posix().endswith("abc123/library_header.jpg")
     write(cache / "7/header.jpg", b"x")
-    assert context.find_art(7, root).endswith("7/header.jpg")
+    assert Path(context.find_art(7, root)).as_posix().endswith("7/header.jpg")
     write(cache / "7/library_hero.jpg", b"x")
-    assert context.find_art(7, root).endswith("7/library_hero.jpg")
+    assert Path(context.find_art(7, root)).as_posix().endswith("7/library_hero.jpg")
     write(cache / "8_header.jpg", b"x")
-    assert context.find_art(8, root).endswith("8_header.jpg")
+    assert Path(context.find_art(8, root)).as_posix().endswith("8_header.jpg")
     assert context.find_art(9, root) is None
     write(root / "userdata/1/config/grid/55_hero.png", b"x")
-    assert context.find_art(55, root, shortcut=True).endswith("55_hero.png")
+    assert Path(context.find_art(55, root, shortcut=True)).as_posix().endswith("55_hero.png")
 
 
 def test_parse_shortcuts():

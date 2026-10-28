@@ -1,4 +1,6 @@
+import sys
 import os
+import queue
 import time
 
 import pytest
@@ -281,6 +283,7 @@ def test_stop_all_cuts_long_delays_short():
     assert dev.keys() == [(0x111, 1), (0x111, 0)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux only")
 def test_device_errors_are_reported_not_raised(monkeypatch):
     def refuse():
         raise PermissionError(13, "Permission denied", "/dev/uinput")
@@ -321,17 +324,30 @@ def test_spy_parse_ignores_replies_and_other_features():
     assert spy.parse(b"\x01\x02\x03", 9) == ([], b"")
 
 
+class QueueRaw:
+    """Stands in for hidpp.RawHid: hands out the chunks put on its queue."""
+
+    def __init__(self):
+        self.q = queue.Queue()
+
+    def read(self, timeout):
+        try:
+            return self.q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+
 def test_spy_reports_changes_from_a_pipe():
-    r, w = os.pipe()
-    s = spy.ButtonSpy(None, 9, fd=r)
+    raw = QueueRaw()
+    s = spy.ButtonSpy(None, 9, raw=raw)
     s.start()
     try:
-        os.write(w, spy_event(0x0010))
-        os.write(w, spy_event(0x0010))           # no change: no entry
+        raw.q.put(spy_event(0x0010))
+        raw.q.put(spy_event(0x0010))             # no change: no entry
         whole = spy_event(0x0011) + spy_event(0)
-        os.write(w, whole[:10])                  # split across reads
+        raw.q.put(whole[:10])                    # split across reads
         time.sleep(0.05)
-        os.write(w, whole[10:])
+        raw.q.put(whole[10:])
         deadline = time.monotonic() + 2
         got = []
         while len(got) < 3 and time.monotonic() < deadline:
@@ -341,8 +357,6 @@ def test_spy_reports_changes_from_a_pipe():
         assert s.state == "running"
     finally:
         s.stop()
-        os.close(w)
-        os.close(r)
 
 
 def test_spy_open_error():

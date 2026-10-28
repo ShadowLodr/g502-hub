@@ -1,4 +1,4 @@
-"""HID++ 2.0 transport over Linux hidraw.
+"""HID++ 2.0 transport over Linux hidraw or, on Windows, hidapi.
 
 Framing, error frames and reply matching follow docs/protocol.md §1.
 """
@@ -6,6 +6,7 @@ Framing, error frames and reply matching follow docs/protocol.md §1.
 import glob
 import os
 import select
+import sys
 import time
 from collections import deque
 
@@ -49,7 +50,14 @@ class Event:
 
 
 def find_hidraw(vid, pid):
-    """Return the hidraw node of the interface that carries HID++ reports."""
+    """Return the hidraw node (Windows: hidapi path) of the interface that carries HID++ reports."""
+    if sys.platform == "win32":
+        import hid
+        # Windows splits the vendor interface into one collection per report; usage 2 = long (0x11)
+        for d in hid.enumerate(vid, pid):
+            if d["usage_page"] == 0xFF00 and d["usage"] == 0x0002:
+                return d["path"]
+        return None
     want = f"{vid:08X}:{pid:08X}"
     for node in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
         try:
@@ -66,18 +74,63 @@ def find_hidraw(vid, pid):
     return None
 
 
+class RawHid:
+    """One open handle on the HID++ interface; every handle gets its own copy of input reports."""
+
+    def __init__(self, path):
+        if sys.platform == "win32":
+            import hid
+            self.dev = hid.device()
+            try:
+                self.dev.open_path(path.encode() if isinstance(path, str) else path)
+            except OSError as e:  # hidapi gives no errno; G HUB holding the device looks the same
+                raise PermissionError(f"can't open the mouse ({e}); quit Logitech G HUB and try again") from None
+            self.fd = None
+        else:
+            self.dev = None
+            self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+
+    def read(self, timeout):
+        """One report, or None after `timeout` seconds."""
+        if self.dev is not None:
+            data = self.dev.read(64, max(int(timeout * 1000), 1))
+            return bytes(data) or None
+        ready, _, _ = select.select([self.fd], [], [], max(timeout, 0))
+        if not ready:
+            return None
+        try:
+            data = os.read(self.fd, 64)
+        except BlockingIOError:
+            return None
+        if not data:
+            raise OSError("the device went away")
+        return data
+
+    def write(self, data):
+        if self.dev is not None:
+            self.dev.write(data)
+        else:
+            os.write(self.fd, data)
+
+    def close(self):
+        if self.dev is not None:
+            self.dev.close()
+            self.dev = None
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
 class Hidpp:
     def __init__(self, path, index=CORDED):
         self.path = path
         self.index = index
-        self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        self.raw = RawHid(path)
         self.events = deque(maxlen=256)
         self._features = {0x0000: 0}
 
     def close(self):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        self.raw.close()
 
     def __enter__(self):
         return self
@@ -85,17 +138,8 @@ class Hidpp:
     def __exit__(self, *exc):
         self.close()
 
-    def fileno(self):
-        return self.fd
-
     def _read_report(self, timeout):
-        ready, _, _ = select.select([self.fd], [], [], max(timeout, 0))
-        if not ready:
-            return None
-        try:
-            return os.read(self.fd, 64)
-        except BlockingIOError:
-            return None
+        return self.raw.read(timeout)
 
     def _queue_if_event(self, data):
         # Events carry software id 0 in the low nibble of byte 3
@@ -105,13 +149,14 @@ class Hidpp:
     def request(self, feature_index, function, params=b"", timeout=1.0, retries=2):
         """Send a request and return the 16 parameter bytes of the reply."""
         params = bytes(params)
-        report = SHORT if len(params) <= 3 else LONG
+        # Windows only lets us write to the long-report collection; HID++ 2.0 accepts long for everything
+        report = SHORT if len(params) <= 3 and sys.platform != "win32" else LONG
         func_sw = (function << 4) | SW_ID
         msg = bytes([report, self.index, feature_index, func_sw]) + params
         msg = msg.ljust(SIZES[report], b"\0")
 
         for attempt in range(retries + 1):
-            os.write(self.fd, msg)
+            self.raw.write(msg)
             deadline = time.monotonic() + timeout
             try:
                 while (data := self._read_report(deadline - time.monotonic())) is not None:
