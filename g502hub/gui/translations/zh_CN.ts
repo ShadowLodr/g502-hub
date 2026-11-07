@@ -1759,8 +1759,8 @@ Continue?</source>
     <name>Placeholder</name>
     <message>
         <location filename="../app.py" line="39"/>
-        <source>Connect your G502 HERO</source>
-        <translation>请连接你的 G502 HERO 鼠标</translation>
+        <source>Connect your G502</source>
+        <translation>请连接你的 G502 鼠标</translation>
     </message>
     <message>
         <location filename="../app.py" line="43"/>

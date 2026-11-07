@@ -38,7 +38,7 @@ def test_chinese_translation_loading():
 
         from g502hub.gui.app import Placeholder
         placeholder = Placeholder()
-        assert placeholder.title.text() == "请连接你的 G502 HERO 鼠标"
+        assert placeholder.title.text() == "请连接你的 G502 鼠标"
         assert placeholder.detail.text() == "正在寻找鼠标设备…"
     finally:
         reset_translation(app)
@@ -60,7 +60,7 @@ def test_english_fallback():
 
         from g502hub.gui.app import Placeholder
         placeholder = Placeholder()
-        assert placeholder.title.text() == "Connect your G502 HERO"
+        assert placeholder.title.text() == "Connect your G502"
         assert placeholder.detail.text() == "Looking for the mouse…"
     finally:
         reset_translation(app)
