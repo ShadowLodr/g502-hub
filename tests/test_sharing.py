@@ -49,6 +49,31 @@ def test_rejects_bad_files(change, message):
         sharing.load(json.dumps(doc))
 
 
+def lightspeed_profile():
+    p = profiles()[0]
+    p.buttons[8] = onboard.Special(sharing.BATTERY, arg=0, reserved=0)  # G9, as on the LIGHTSPEED
+    p.raw = p.encode()
+    return p
+
+
+def test_lightspeed_files_say_so():
+    assert json.loads(sharing.export(profiles()[0], "G502 LIGHTSPEED"))["device"] == "046d:407f"
+
+
+def test_lightspeed_profile_on_a_hero_loses_the_battery_button():
+    loaded, notes = sharing.load(sharing.export(lightspeed_profile(), "G502 LIGHTSPEED"), "G502 HERO")
+    assert isinstance(loaded.buttons[8], onboard.Disabled)
+    assert "Made on a G502 LIGHTSPEED" in notes[0] and "button 9" in notes[1]
+    assert onboard.crc_ok(loaded.encode())
+
+
+def test_hero_profile_on_a_lightspeed_is_unchanged():
+    p = profiles()[0]
+    loaded, notes = sharing.load(sharing.export(p), "G502 LIGHTSPEED")
+    assert loaded.encode() == p.encode()
+    assert notes == ["Made on a G502 HERO; the settings carry over to the G502 LIGHTSPEED"]
+
+
 def test_rejects_non_json():
     with pytest.raises(sharing.ShareError, match="not a profile file"):
         sharing.load("hello")

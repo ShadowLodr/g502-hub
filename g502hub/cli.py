@@ -19,9 +19,10 @@ BUTTON_ALIASES = {"left": "g1", "right": "g2", "middle": "g3", "back": "g4",
                   "forward": "g5", "sniper": "g6"}
 FEATURE_NAMES = {
     0x0000: "Root", 0x0001: "FeatureSet", 0x0003: "DeviceFwVersion",
-    0x0005: "DeviceName", 0x00C2: "DfuControlSigned", 0x1300: "LedControl",
+    0x0005: "DeviceName", 0x0020: "ConfigChange", 0x00C2: "DfuControlSigned", 0x1001: "BatteryVoltage", 0x1300: "LedControl",
     0x1802: "DeviceReset", 0x1806: "ConfigurableDeviceProperties",
     0x1E00: "EnableHiddenFeatures", 0x2201: "AdjustableDpi",
+    0x1D4B: "WirelessDeviceStatus", 0x2121: "HiResWheel",
     0x8060: "AdjustableReportRate", 0x8070: "ColorLedEffects",
     0x8100: "OnboardProfiles", 0x8110: "MouseButtonSpy",
 }
@@ -91,6 +92,10 @@ def cmd_info(dev, args):
     info = dev.onboard_info()
     mode = {MODE_ONBOARD: "onboard", MODE_HOST: "host (software)"}.get(dev.get_mode(), "?")
     print(f"  mode: {mode}")
+    if bat := dev.battery():
+        level = "charging" if bat.percent is None else f"~{bat.percent}%"
+        state = "full" if bat.full else "on the charger" if bat.charging else "on battery"
+        print(f"  battery: {level} ({bat.millivolts} mV, {state})")
     if dev.get_mode() == MODE_ONBOARD:
         cur = dev.get_current_profile()
         print(f"  active profile: {'ROM ' if cur >= ROM else ''}slot {cur & 0xFF}, "
@@ -105,6 +110,8 @@ def cmd_info(dev, args):
     zones = ", ".join(f"{z.name}: " + "/".join(onboard.LED_EFFECTS.get(e, hex(e)) for e in z.effects)
                       for z in dev.led_zones())
     print(f"  LED zones: {zones}")
+    if mat := dev.powerplay():
+        print(f"  POWERPLAY mat: logo {mat.get_led().describe()}")
     if args.features:
         print("\n  idx  id      ver  name")
         for idx, fid, flags, ver in dev.features():
@@ -233,6 +240,18 @@ def cmd_led(dev, args):
     Session(dev).edit_profile(args.slot, change)
 
 
+def cmd_powerplay(dev, args):
+    mat = dev.powerplay()
+    if mat is None:
+        raise DeviceNotFound("no POWERPLAY mat found")
+    if args.effect is None:
+        print(f"logo: {mat.get_led().describe()}")
+        return
+    # 1 = RAM and the mat's memory, so it survives a power cut
+    mat.set_led(0, make_led(args), persistence=0 if args.temporary else 1)
+    print(f"logo: {mat.get_led().describe()}" + (" (until the mat loses power)" if args.temporary else ""))
+
+
 def cmd_enable(dev, args, enabled=True):
     directory = dev.read_directory()
     if not 1 <= args.slot <= len(directory.entries):
@@ -340,6 +359,14 @@ def main(argv=None):
         p.add_argument("--brightness", type=int, default=100, help="1-100")
         p.set_defaults(func=func)
 
+    p = sub.add_parser("powerplay", help="show or set the POWERPLAY mat's logo light")
+    p.add_argument("effect", nargs="?", choices=["off", "fixed", "breathing", "cycle"])
+    p.add_argument("color", nargs="?", help="RRGGBB")
+    p.add_argument("--period", type=int, default=8000, help="ms (breathing, cycle)")
+    p.add_argument("--brightness", type=int, default=100, help="1-100")
+    p.add_argument("--temporary", action="store_true", help="don't save it in the mat")
+    p.set_defaults(func=cmd_powerplay)
+
     for name, enabled in (("enable", True), ("disable", False)):
         p = sub.add_parser(name, help=f"{name} a slot for profile cycling")
         p.add_argument("slot", type=int)
@@ -356,6 +383,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         with G502() as dev:
+            if dev.wireless:
+                dev.ping()
             args.func(dev, args)
     except (DeviceNotFound, ValueError, IOError, HidppError, TimeoutError) as e:
         sys.exit(f"g502hub: {e}")

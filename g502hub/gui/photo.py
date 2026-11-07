@@ -24,41 +24,50 @@ PHOTO_URL = ("https://resource.logitechg.com/f_png,q_auto/content/dam/gaming/en/
 PHOTO_CROP = (730, 130, 1030, 1850)
 
 
-def download():
-    """Fetch Logitech's photo, crop it to the mouse and save it to PHOTO_PATH. Raises on failure."""
+def fetch(url, source_size, crop, size, path):
+    """Fetch one of Logitech's photos, crop and scale it, and save it to `path`. Raises on failure."""
     import urllib.request
-    req = urllib.request.Request(PHOTO_URL, headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
         data = r.read()
     image = QImage.fromData(data)
-    if image.isNull() or (image.width(), image.height()) != (2500, 2160):
+    if image.isNull() or (image.width(), image.height()) != source_size:
         raise ValueError(f"unexpected image ({image.width()}x{image.height()}); Logitech may have changed it")
-    image = image.convertToFormat(QImage.Format.Format_ARGB32).copy(QRect(*PHOTO_CROP))
-    image = image.scaled(*PHOTO_SIZE, Qt.AspectRatioMode.IgnoreAspectRatio,
-                         Qt.TransformationMode.SmoothTransformation)
-    PHOTO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PHOTO_PATH.with_suffix(".part.png")
+    image = image.convertToFormat(QImage.Format.Format_ARGB32).copy(QRect(*crop))
+    image = image.scaled(*size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".part.png")
     if not image.save(str(tmp)):
-        raise OSError(f"couldn't write {PHOTO_PATH}")
-    tmp.replace(PHOTO_PATH)
-    return PHOTO_PATH
+        raise OSError(f"couldn't write {path}")
+    tmp.replace(path)
+    return path
 
 
-def load_image():
-    """The downloaded photo, or None if it isn't there (or is damaged)."""
-    image = QImage(str(PHOTO_PATH))
-    if image.isNull() or (image.width(), image.height()) != PHOTO_SIZE:
+def load(path, size):
+    """A downloaded photo, or None if it isn't there (or is damaged)."""
+    image = QImage(str(path))
+    if image.isNull() or (image.width(), image.height()) != size:
         return None
     return image
 
 
+def download():
+    """Fetch the mouse photo to PHOTO_PATH."""
+    return fetch(PHOTO_URL, (2500, 2160), PHOTO_CROP, PHOTO_SIZE, PHOTO_PATH)
+
+
+def load_image():
+    return load(PHOTO_PATH, PHOTO_SIZE)
+
+
 class PhotoFetcher(QObject):
-    """Downloads the photo on a background thread; `done(error)` fires on the UI thread."""
+    """Downloads a photo on a background thread; `done(error)` fires on the UI thread."""
 
     done = Signal(object)  # None on success, else the exception
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, download=download):
         super().__init__(parent)
+        self.download = download
         self.busy = False
 
     def start(self):
@@ -68,7 +77,7 @@ class PhotoFetcher(QObject):
 
         def run():
             try:
-                download()
+                self.download()
                 error = None
             except Exception as e:  # network, an unexpected image, disk
                 error = e
@@ -106,6 +115,36 @@ def elements():
     ]
 
 
+def split_lights(image, areas):
+    """Split a photo into an 'LEDs off' base and a light mask per area of `areas`
+    ({key: (bounding box, glow center, glow radius)}), from its saturated blue pixels."""
+    w, h = image.width(), image.height()
+    px = np.frombuffer(image.constBits(), np.uint8).reshape(h, image.bytesPerLine() // 4, 4)[:, :w]
+    bgr = px[..., :3].astype(np.float32) / 255
+    mx, mn = bgr.max(-1), bgr.min(-1)
+    sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0)
+    blue = bgr[..., 0] - np.maximum(bgr[..., 1], bgr[..., 2]) * 0.55
+    strength = np.clip((sat - 0.18) / 0.35, 0, 1) * np.clip((mx - 0.08) / 0.3, 0, 1) * (blue > 0.05)
+    base = px.copy()
+    masks = {}
+    for zone, (rect, _, _) in areas.items():
+        sl = (slice(rect.top(), rect.bottom() + 1), slice(rect.left(), rect.right() + 1))
+        s = strength[sl]
+        # LEDs off: dark smoked plastic, keeping a little of the photo's shading
+        off = (mx[sl] * 0.28 + 0.05)[..., None] * np.array([1.0, 0.98, 0.94], np.float32)
+        mixed = bgr[sl] * (1 - s[..., None]) + off * s[..., None]
+        base[sl][..., :3] = (mixed * 255).astype(np.uint8)
+        shade = 0.55 + 0.45 * mx[sl] / max(float(mx[sl].max()), 1e-6)
+        alpha = (np.clip(s * shade, 0, 1) * 255).astype(np.uint8)
+        mask = QImage(alpha.shape[1], alpha.shape[0], QImage.Format.Format_ARGB32_Premultiplied)
+        mask.fill(Qt.GlobalColor.transparent)
+        buf = np.frombuffer(mask.bits(), np.uint8).reshape(mask.height(), mask.bytesPerLine() // 4, 4)
+        buf[:, :alpha.shape[1], 3] = alpha
+        masks[zone] = mask
+    out = QImage(base.tobytes(), w, h, w * 4, QImage.Format.Format_ARGB32).copy()
+    return out, masks
+
+
 class PhotoSkin:
     canvas = QRectF(-190, -10, 990, 1130)
     halo = (QPointF(300, 560), 620)
@@ -130,32 +169,7 @@ class PhotoSkin:
         self.base, self.masks = self._prepare(image.convertToFormat(QImage.Format.Format_ARGB32))
 
     def _prepare(self, image):
-        """Split the photo into an 'LEDs off' base and a light mask per zone."""
-        w, h = image.width(), image.height()
-        px = np.frombuffer(image.constBits(), np.uint8).reshape(h, image.bytesPerLine() // 4, 4)[:, :w]
-        bgr = px[..., :3].astype(np.float32) / 255
-        mx, mn = bgr.max(-1), bgr.min(-1)
-        sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0)
-        blue = bgr[..., 0] - np.maximum(bgr[..., 1], bgr[..., 2]) * 0.55
-        strength = np.clip((sat - 0.18) / 0.35, 0, 1) * np.clip((mx - 0.08) / 0.3, 0, 1) * (blue > 0.05)
-        base = px.copy()
-        masks = {}
-        for zone, (rect, _, _) in LED_AREAS.items():
-            sl = (slice(rect.top(), rect.bottom() + 1), slice(rect.left(), rect.right() + 1))
-            s = strength[sl]
-            # LEDs off: dark smoked plastic, keeping a little of the photo's shading
-            off = (mx[sl] * 0.28 + 0.05)[..., None] * np.array([1.0, 0.98, 0.94], np.float32)
-            mixed = bgr[sl] * (1 - s[..., None]) + off * s[..., None]
-            base[sl][..., :3] = (mixed * 255).astype(np.uint8)
-            shade = 0.55 + 0.45 * mx[sl] / max(float(mx[sl].max()), 1e-6)
-            alpha = (np.clip(s * shade, 0, 1) * 255).astype(np.uint8)
-            mask = QImage(alpha.shape[1], alpha.shape[0], QImage.Format.Format_ARGB32_Premultiplied)
-            mask.fill(Qt.GlobalColor.transparent)
-            buf = np.frombuffer(mask.bits(), np.uint8).reshape(mask.height(), mask.bytesPerLine() // 4, 4)
-            buf[:, :alpha.shape[1], 3] = alpha
-            masks[zone] = mask
-        out = QImage(base.tobytes(), w, h, w * 4, QImage.Format.Format_ARGB32).copy()
-        return out, masks
+        return split_lights(image, LED_AREAS)
 
     def paint(self, p, colors, view):
         if not self.ready:
@@ -188,26 +202,30 @@ class PhotoSkin:
                     p.drawPath(el.path)
 
     def _paint_light(self, p, zone, color):
-        rect, center, radius = LED_AREAS[zone]
-        glow = QRadialGradient(center, radius)
-        c = QColor(color)
-        c.setAlpha(90)
-        glow.setColorAt(0, c)
-        c.setAlpha(28)
-        glow.setColorAt(0.45, c)
-        c.setAlpha(0)
-        glow.setColorAt(1, c)
-        p.save()
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(glow)
-        p.drawEllipse(center, radius, radius)
-        p.restore()
-        lit = QImage(self.masks[zone].size(), QImage.Format.Format_ARGB32_Premultiplied)
-        lit.fill(color)
-        q = QPainter(lit)
-        q.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-        q.drawImage(0, 0, self.masks[zone])
-        q.end()
-        p.drawImage(rect.topLeft(), lit)
+        paint_light(p, LED_AREAS[zone], self.masks[zone], color)
 
+
+def paint_light(p, area, mask, color):
+    """Light an area split off by split_lights: a glow around it, and its mask in `color`."""
+    rect, center, radius = area
+    glow = QRadialGradient(center, radius)
+    c = QColor(color)
+    c.setAlpha(90)
+    glow.setColorAt(0, c)
+    c.setAlpha(28)
+    glow.setColorAt(0.45, c)
+    c.setAlpha(0)
+    glow.setColorAt(1, c)
+    p.save()
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(glow)
+    p.drawEllipse(center, radius, radius)
+    p.restore()
+    lit = QImage(mask.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    lit.fill(color)
+    q = QPainter(lit)
+    q.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    q.drawImage(0, 0, mask)
+    q.end()
+    p.drawImage(rect.topLeft(), lit)

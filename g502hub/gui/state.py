@@ -6,10 +6,13 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTime
 
 from .. import backup, onboard, settings
 from ..device import MODE_ONBOARD, ROM, DeviceNotFound, G502, NoPermission
+from ..hidpp import HidppError
 
 SAVE_DELAY_MS = 700
 POLL_MS = 250
+WIRELESS_POLL_MS = 1000  # each poll is a radio round trip, so ask a wireless mouse less often
 RECONNECT_MS = 2000
+BATTERY_S = 60
 
 
 class _Worker(QObject):
@@ -80,6 +83,8 @@ class MouseState(QObject):
     loaded = Signal()
     profileEdited = Signal(int)  # slot
     activeChanged = Signal()
+    batteryChanged = Signal()
+    matChanged = Signal()
     status = Signal(str, str)  # kind (busy, ok, error, info), text
 
     def __init__(self):
@@ -87,6 +92,14 @@ class MouseState(QObject):
         self.bridge = Bridge()
         self.connected = False
         self.no_permission = False
+        self.model = "G502"
+        self.wireless = False
+        self.battery = None  # device.Battery, on the wireless mouse
+        self.mat_led = None  # the POWERPLAY mat's logo LedEffect, when there's a mat
+        self.mat_sync = bool(settings.load().get("mat_sync"))  # the mat follows the mouse's logo
+        self._mat_pending = None
+        self._mat_slot = None  # the profile the mat last followed
+        self._battery_at = 0.0
         self.name = ""
         self.firmware = []
         self.info = None
@@ -107,11 +120,15 @@ class MouseState(QObject):
 
         self._save_timer = QTimer(self, singleShot=True, interval=SAVE_DELAY_MS)
         self._save_timer.timeout.connect(self.flush)
-        self.poll_ms = POLL_MS
+        self.poll_ms = POLL_MS  # what live effects asked for
         self._poll_timer = QTimer(self, interval=POLL_MS)
         self._poll_timer.timeout.connect(self._poll)
         self._led_timer = QTimer(self, singleShot=True, interval=40)
         self._led_timer.timeout.connect(self._send_led_preview)
+        self.activeChanged.connect(self._follow_profile)
+        self.profileEdited.connect(lambda slot: slot == self.active_slot and self.sync_mat())
+        self._mat_timer = QTimer(self, singleShot=True, interval=40)
+        self._mat_timer.timeout.connect(lambda: self._send_mat_led(self._mat_pending, persistence=0))
 
     # ------------------------------------------------------------ loading
 
@@ -125,11 +142,15 @@ class MouseState(QObject):
         self._loading = True
 
         def job(dev):
+            if dev.wireless:
+                dev.ping()
             if dev.get_mode() != MODE_ONBOARD:
                 dev.set_mode(MODE_ONBOARD)
             directory = dev.read_directory()
             rom = onboard.Directory.decode(dev.read_sector(ROM))
             return {
+                "model": dev.model, "wireless": dev.wireless, "battery": dev.battery(),
+                "mat_led": _mat_led(dev),
                 "name": dev.name(), "firmware": dev.firmware(), "info": dev.onboard_info(),
                 "zones": dev.led_zones(), "dpi_range": dev.dpi_range(),
                 "intervals": dev.report_intervals(), "directory": directory,
@@ -141,8 +162,8 @@ class MouseState(QObject):
                 "active": dev.get_current_profile(), "dpi_index": dev.get_current_dpi_index(),
             }
 
-        if not self.connected:
-            self.status.emit("busy", "Looking for the G502 HERO…")
+        if not self.connected and not self.wireless:  # a sleeping mouse keeps its message
+            self.status.emit("busy", "Looking for the mouse…")
         self.bridge.call(job, self._loaded)
 
     def _loaded(self, data, error):
@@ -160,26 +181,33 @@ class MouseState(QObject):
                 self.status.emit("info", str(error) if isinstance(error, DeviceNotFound)
                                  else "Mouse disconnected")
             return
-        for key in ("name", "firmware", "info", "zones", "dpi_range", "intervals",
-                    "directory", "profiles", "factory", "dpi_index", "pages"):
+        for key in ("model", "wireless", "battery", "mat_led", "name", "firmware", "info", "zones", "dpi_range",
+                    "intervals", "directory", "profiles", "factory", "dpi_index", "pages"):
             setattr(self, key, data[key])
+        self._battery_at = time.monotonic()
         self.active_slot = self.slot_of(data["active"])
         self._dirty.clear()
         self._set_connected(True)
         self.loaded.emit()
+        self._mat_slot = self.active_slot
+        self.sync_mat(realign=True)
         self.status.emit("ok", "Ready")
 
     def _set_connected(self, connected):
         if connected != self.connected:
             self.connected = connected
-            self._poll_timer.setInterval(self.poll_ms if connected else RECONNECT_MS)
+            self._poll_timer.setInterval(self._poll_interval() if connected else RECONNECT_MS)
             self.connectedChanged.emit(connected)
 
     def set_poll_ms(self, ms):
         """How often to read the active profile and DPI level (faster for DPI-linked effects)."""
         self.poll_ms = ms
         if self.connected:
-            self._poll_timer.setInterval(ms)
+            self._poll_timer.setInterval(self._poll_interval())
+
+    def _poll_interval(self):
+        # A DPI-linked live effect still gets its fast polling on the wireless mouse
+        return self.poll_ms if self.poll_ms < POLL_MS or not self.wireless else WIRELESS_POLL_MS
 
     def slot_of(self, sector):
         for n, entry in enumerate(self.directory.entries, 1):
@@ -196,14 +224,19 @@ class MouseState(QObject):
             return
         if self.bridge.pending:
             return
-        self.bridge.call(lambda dev: (dev.get_current_profile(), dev.get_current_dpi_index()),
-                         self._polled)
+        want_battery = self.wireless and time.monotonic() - self._battery_at > BATTERY_S
+        self.bridge.call(lambda dev: (dev.get_current_profile(), dev.get_current_dpi_index(),
+                                      dev.battery() if want_battery else None), self._polled)
 
     def _polled(self, result, error):
         if error:
             self._set_connected(False)
-            self.status.emit("info", "Mouse disconnected")
+            self.status.emit("info", f"{self.model} is asleep or switched off. Move it to wake it up."
+                             if self.wireless else "Mouse disconnected")
             return
+        if result[2] is not None:
+            self.battery, self._battery_at = result[2], time.monotonic()
+            self.batteryChanged.emit()
         slot, dpi_index = self.slot_of(result[0]), result[1]
         if (slot, dpi_index) != (self.active_slot, self.dpi_index):
             self.active_slot, self.dpi_index = slot, dpi_index
@@ -394,13 +427,75 @@ class MouseState(QObject):
 
     def _send_led_preview(self):
         pending, self._led_pending = self._led_pending, {}
+        mirror = self.syncing_mat and pending.get(1)
 
         def job(dev):
             for zone, effect in pending.items():
                 dev.set_led(zone, effect, persistence=0)
+            if mirror:
+                dev.powerplay().set_led(0, mirror, persistence=0)
 
         if self.connected:
             self.bridge.call(job)
+
+    # ------------------------------------------------------------ POWERPLAY sync
+
+    @property
+    def syncing_mat(self):
+        return self.mat_sync and self.mat_led is not None and self.connected
+
+    def _follow_profile(self):
+        # DPI changes fire this too; only a different profile changes the logo lighting
+        if self.active_slot != self._mat_slot:
+            self._mat_slot = self.active_slot
+            self.sync_mat(realign=True)
+
+    def set_mat_sync(self, on):
+        self.mat_sync = on
+        settings.update(mat_sync=on)
+        self.sync_mat(realign=True)
+
+    def sync_mat(self, realign=False):
+        """Give the mat the active profile's logo lighting, saved in the mat so it keeps
+        it without the app. realign: restart the mouse's and the mat's animations
+        together, since each runs them on its own clock and they drift apart."""
+        profile = self.profile()
+        if not self.syncing_mat or profile is None:
+            return
+        logo, leds = profile.leds[1], list(profile.leds[:2])
+        save = logo != self.mat_led
+        if not (save or realign):
+            return
+        self.mat_led = logo
+        self.matChanged.emit()
+
+        def job(dev):
+            mat = dev.powerplay()
+            if save:
+                mat.set_led(0, logo, persistence=1)
+            if realign:
+                # Back to back, so both animations start from the same moment
+                for zone, effect in enumerate(leds):
+                    dev.set_led(zone, effect, persistence=0)
+                mat.set_led(0, logo, persistence=0)
+
+        self.bridge.call(job, lambda _, e: e and self.status.emit("error", f"POWERPLAY: {e}"))
+
+    def set_mat_led(self, effect, final):
+        """Light the POWERPLAY mat's logo: throttled while dragging, saved in the mat when final."""
+        self.mat_led = effect
+        if not final:
+            self._mat_pending = effect
+            if not self._mat_timer.isActive():
+                self._mat_timer.start()
+            return
+        self._mat_timer.stop()
+        self._send_mat_led(effect, persistence=1, done=lambda _, e: self.status.emit(
+            "error" if e else "ok", f"POWERPLAY: {e}" if e else "Saved to the POWERPLAY"))
+
+    def _send_mat_led(self, effect, persistence, done=None):
+        if self.connected:
+            self.bridge.call(lambda dev: dev.powerplay().set_led(0, effect, persistence), done)
 
     def preview_dpi(self, dpi):
         if self.connected:
@@ -429,3 +524,12 @@ class MouseState(QObject):
         self.flush()
         self.bridge.wait_idle()
         self.bridge.stop()
+
+
+def _mat_led(dev):
+    """The POWERPLAY mat's logo effect, or None; a mat that misbehaves mustn't stop the mouse loading."""
+    try:
+        mat = dev.powerplay()
+        return mat.get_led() if mat else None
+    except (OSError, HidppError):
+        return None

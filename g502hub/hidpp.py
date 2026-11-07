@@ -122,9 +122,13 @@ class RawHid:
 
 
 class Hidpp:
-    def __init__(self, path, index=CORDED):
+    def __init__(self, path, index=CORDED, any_index=False):
+        """any_index: the node only carries this device's reports (a logitech-dj
+        child node), and replies come back with its receiver slot as the index
+        whatever index the request used."""
         self.path = path
         self.index = index
+        self.any_index = any_index
         self.raw = RawHid(path)
         self.events = deque(maxlen=256)
         self._features = {0x0000: 0}
@@ -140,6 +144,9 @@ class Hidpp:
 
     def _read_report(self, timeout):
         return self.raw.read(timeout)
+
+    def _ours(self, data):
+        return len(data) >= 5 and data[0] in SIZES and (self.any_index or data[1] == self.index)
 
     def _queue_if_event(self, data):
         # Events carry software id 0 in the low nibble of byte 3
@@ -160,7 +167,7 @@ class Hidpp:
             deadline = time.monotonic() + timeout
             try:
                 while (data := self._read_report(deadline - time.monotonic())) is not None:
-                    if len(data) < 5 or data[0] not in SIZES or data[1] != self.index:
+                    if not self._ours(data):
                         continue
                     if data[2] in (0xFF, 0x8F) and data[3] == feature_index and data[4] == func_sw:
                         raise HidppError(data[5], feature_index, function)
@@ -180,7 +187,7 @@ class Hidpp:
             data = self._read_report(deadline - time.monotonic())
             if data is None:
                 break
-            if len(data) >= 5 and data[0] in SIZES and data[1] == self.index:
+            if self._ours(data):
                 self._queue_if_event(data)
         out = list(self.events)
         self.events.clear()

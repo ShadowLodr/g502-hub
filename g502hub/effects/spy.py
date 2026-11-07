@@ -11,6 +11,9 @@ SIZES = {0x10: 7, 0x11: 20}  # HID++ short and long reports
 def parse(data, feature_index, device_index=0xFF):
     """(button masks, leftover bytes) from HID++ reports.
 
+    device_index None takes any index: through a LIGHTSPEED receiver the events
+    carry the mouse's receiver slot.
+
     hidraw returns one report per read; a pipe may join or split them, so a
     partial report comes back as leftover for the next read.
     """
@@ -23,7 +26,7 @@ def parse(data, feature_index, device_index=0xFF):
             return masks, data
         frame, data = data[:size], data[size:]
         # Event 0 from the spy feature, software id 0 (a notification, not a reply)
-        if frame[1] == device_index and frame[2] == feature_index and frame[3] == 0x00:
+        if device_index in (None, frame[1]) and frame[2] == feature_index and frame[3] == 0x00:
             masks.append(int.from_bytes(frame[4:6], "big"))
     return masks, b""
 

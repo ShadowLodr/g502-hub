@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from g502hub import macro, onboard
-from g502hub.device import parse_dpi_list
+from g502hub.device import G502, LedZone, PowerPlay, battery_percent, parse_dpi_list
 from g502hub.onboard import (Binding, Consumer, Directory, Key, LedEffect, MouseButton,
                              Profile, Special, Unassigned)
 
@@ -145,6 +145,26 @@ def test_dpi_list_range():
     assert parse_dpi_list(bytes.fromhex("0064e0326400" + "00" * 9)) == (100, 25600, 50)
 
 
+def test_battery_percent():
+    assert battery_percent(4300) == 100
+    assert battery_percent(3811) == 50
+    assert battery_percent(3830) == 54  # between the 50% and 60% points
+    assert battery_percent(3400) == 0
+
+
+@pytest.mark.parametrize("reply, percent, charging, full", [
+    ("0fca00", 87, False, False),    # 4042 mV on battery
+    ("106280", None, True, False),   # 4194 mV on the charger: too high to trust
+    ("106281", 100, False, True),    # charge finished
+])
+def test_battery_from_voltage_reply(reply, percent, charging, full):
+    dev = G502.__new__(G502)
+    dev.hidpp = type("Hidpp", (), {"feature_index": lambda self, fid: 6})()
+    dev._call = lambda *a: bytes.fromhex(reply).ljust(16, b"\0")
+    bat = dev.battery()
+    assert (bat.percent, bat.charging, bat.full) == (percent, charging, full)
+
+
 def test_macro_round_trip_across_a_jump():
     steps = [("key-down", 0x01, 0x06), ("delay", 50), ("key-up", 0x01, 0x06),
              ("wheel", -3), ("move", -10, 250), ("consumer-down", 0xCD)]
@@ -157,3 +177,10 @@ def test_macro_round_trip_across_a_jump():
 def test_macro_describe():
     assert macro.describe(("key-down", 0x01, 0x06)) == "key-down ctrl+c"
     assert macro.describe(("delay", 30)) == "delay 30 ms"
+
+
+def test_powerplay_led_from_effect_settings():
+    mat = PowerPlay.__new__(PowerPlay)
+    mat._zones = [LedZone(0, 2, {0x00: 0, 0x01: 1, 0x03: 2, 0x0A: 3})]  # as the real mat reports
+    mat._call = lambda *a: bytes.fromhex("00010055ff").ljust(16, b"\0")  # zone 0, index 1 = fixed
+    assert mat.get_led().describe() == "fixed #0055ff"

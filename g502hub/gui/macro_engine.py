@@ -174,7 +174,9 @@ class MacroEngine(QObject):
 
         def job(dev):
             dev.spy_start()
-            return dev.path, dev.hidpp.feature_index(SPY_FEATURE), dev.hidpp.index
+            # None: any index, for a logitech-dj child node that answers with its receiver slot
+            return (dev.path, dev.hidpp.feature_index(SPY_FEATURE),
+                    None if dev.hidpp.any_index else dev.hidpp.index)
 
         def started(result, error):
             self._starting = False

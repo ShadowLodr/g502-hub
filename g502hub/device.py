@@ -1,4 +1,4 @@
-"""The G502 HERO's HID++ features: onboard profiles, DPI, report rate, LEDs, button spy.
+"""The G502's HID++ features: onboard profiles, DPI, report rate, LEDs, button spy, battery.
 
 Function numbers and payloads come from docs/protocol.md.
 """
@@ -12,32 +12,41 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from . import onboard
-from .hidpp import CORDED, ERR_BUSY, ERR_HARDWARE, Hidpp, HidppError, find_hidraw
+from .hidpp import CORDED, ERR_BUSY, ERR_HARDWARE, ERR_INVALID_ARGUMENT, Hidpp, HidppError, find_hidraw
 
 VID, PID = 0x046D, 0xC08B
-# The G502 LIGHTSPEED keeps the same profile layout (format 3, byte for byte the HERO's format 2):
-# by cable it is a device of its own, wirelessly it is device 1 behind a Lightspeed receiver
-CORDED_PIDS = (0xC08B, 0xC08D)
+# (product id, wireless) in lookup order: the HERO, then the LIGHTSPEED through its
+# receiver (the logitech-dj child node), then the LIGHTSPEED on its charging cable
+PRODUCTS = ((0xC08B, False), (0x407F, True), (0xC08D, False))
+LIGHTSPEED = (0x407F, 0xC08D)
+POWERPLAY_PID = 0x405F  # the mat's own device, next to the mouse on its receiver
+# Without logitech-dj child nodes (Windows, or Linux without hid-logitech-dj) the mouse
+# is reached as device 1 on the receiver's own HID++ interface
 RECEIVER_PIDS = (0xC539, 0xC53A, 0xC53F, 0xC547)
 WIRELESS_INDEX = 1
 
 
 def find_mouse():
-    """(path, device index) of the first G502 found, or (None, None)."""
-    for pid in CORDED_PIDS:
+    """(path, device index, wireless, product id) of the first G502 found, or Nones."""
+    for pid, wireless in PRODUCTS:
         if path := find_hidraw(VID, pid):
-            return path, CORDED
+            return path, CORDED, wireless, pid
     for pid in RECEIVER_PIDS:
         if path := find_hidraw(VID, pid):
-            return path, WIRELESS_INDEX
-    return None, None
+            return path, WIRELESS_INDEX, True, None
+    return None, None, False, None
 
 ROOT, FEATURE_SET, FW_VERSION, DEVICE_NAME = 0x0000, 0x0001, 0x0003, 0x0005
-ADJUSTABLE_DPI, REPORT_RATE = 0x2201, 0x8060
+BATTERY_VOLTAGE, ADJUSTABLE_DPI, REPORT_RATE = 0x1001, 0x2201, 0x8060
 COLOR_LED_EFFECTS, ONBOARD_PROFILES, BUTTON_SPY = 0x8070, 0x8100, 0x8110
 
 MODE_ONBOARD, MODE_HOST = 1, 2
 ROM = 0x0100  # memory type 1 = read-only factory profiles
+MIN_WRITE_BATTERY = 10  # % below which a wireless mouse may drop out mid-write
+
+# Battery voltage (mV) to charge (%) for the LIGHTSPEED's Li-ion cell, interpolated
+BATTERY_CURVE = ((4186, 100), (4067, 90), (3989, 80), (3922, 70), (3859, 60), (3811, 50),
+                 (3778, 40), (3751, 30), (3717, 20), (3671, 10), (3646, 5), (3579, 2), (3500, 0))
 
 
 if sys.platform == "win32":
@@ -68,6 +77,10 @@ class NoPermission(DeviceNotFound):
     """The mouse is there but this user may not open it (the udev rule is missing)."""
 
 
+class DeviceAsleep(DeviceNotFound):
+    """The receiver is there but the wireless mouse doesn't answer (asleep or switched off)."""
+
+
 def _exclusive(method):
     """Run a multi-request device method under G502.exclusive()."""
     @functools.wraps(method)
@@ -85,6 +98,24 @@ def parse_dpi_list(payload):
     steps = [v & 0x1FFF for v in values if v >> 13 == 0b111]
     plain = [v for v in values if v >> 13 != 0b111]
     return min(plain), max(plain), (steps[0] if steps else 1)
+
+
+def battery_percent(mv):
+    """Rough charge estimate from the cell voltage."""
+    if mv >= BATTERY_CURVE[0][0]:
+        return 100
+    for (hi_mv, hi), (lo_mv, lo) in zip(BATTERY_CURVE, BATTERY_CURVE[1:]):
+        if mv >= lo_mv:
+            return round(lo + (hi - lo) * (mv - lo_mv) / (hi_mv - lo_mv))
+    return 0
+
+
+@dataclass
+class Battery:
+    millivolts: int
+    percent: int | None  # None while charging: the charger lifts the voltage, so it would read high
+    charging: bool
+    full: bool
 
 
 @dataclass
@@ -120,29 +151,10 @@ class LedZone:
         return {1: "primary", 2: "logo"}.get(self.location, f"location-{self.location}")
 
 
-class G502:
-    def __init__(self, path=None, index=CORDED):
-        if not path:
-            path, index = find_mouse()
-        if not path:
-            raise DeviceNotFound("G502 not found (is it plugged in?)")
-        try:
-            self.hidpp = Hidpp(path, index)
-            if index != CORDED:
-                try:
-                    self.hidpp.protocol_version()
-                except (TimeoutError, HidppError):
-                    self.hidpp.close()
-                    raise DeviceNotFound("Receiver found, but the mouse isn't answering (off or asleep? "
-                                         "click a button)") from None
-        except PermissionError:
-            raise NoPermission(f"no permission on {path}: " + ("quit Logitech G HUB" if sys.platform == "win32"
-                               else "install udev/70-g502-hub.rules")) from None
-        self.path = path
-        self._onboard_info = None
-        self._zones = None
-        self._lock_fd = None
-        self._lock_depth = 0
+class _LedDevice:
+    """What the G502 and the POWERPLAY mat share: HID++ calls and 0x8070 lighting."""
+
+    _zones = None
 
     def close(self):
         self.hidpp.close()
@@ -159,7 +171,86 @@ class G502:
             raise HidppError(0x09, feature_id, function)
         return self.hidpp.request(idx, function, params, **kw)
 
+    def led_zones(self):
+        if self._zones is None:
+            self._zones = []
+            for z in range(self._call(COLOR_LED_EFFECTS, 0)[0]):
+                zi = self._call(COLOR_LED_EFFECTS, 1, [z])
+                effects = {}
+                for e in range(zi[3]):
+                    ei = self._call(COLOR_LED_EFFECTS, 2, [z, e])
+                    effects[int.from_bytes(ei[2:4], "big")] = e
+                self._zones.append(LedZone(z, int.from_bytes(zi[1:3], "big"), effects))
+        return self._zones
+
+    def set_led(self, zone, effect, persistence=0):
+        """Show an LedEffect on a zone right now. persistence 0 = RAM only."""
+        z = self.led_zones()[zone]
+        if effect.effect not in z.effects:
+            raise ValueError(f"zone {zone} has no effect 0x{effect.effect:02X}")
+        params = effect.encode()[1:]
+        if effect.effect == 0x01:
+            params = params[:3] + b"\x02" + params[4:]  # no ramp, as G HUB does for live colors
+        self._call(COLOR_LED_EFFECTS, 3, bytes([zone, z.effects[effect.effect]]) + params + bytes([persistence]))
+
+
+class PowerPlay(_LedDevice):
+    """The POWERPLAY mat's own device on the receiver; all it offers is its logo light."""
+
+    def __init__(self, path):
+        self.hidpp = Hidpp(path, any_index=True)
+        self.path = path
+
+    def get_led(self, zone=0):
+        """The effect the zone shows now (getEffectSettings from RAM; the mat
+        can't do getZoneEffect)."""
+        r = self._call(COLOR_LED_EFFECTS, 9, [zone, 0])
+        ids = {i: e for e, i in self.led_zones()[zone].effects.items()}
+        return onboard.LedEffect.decode(bytes([ids.get(r[1], 0)]) + r[2:12])
+
+
+class G502(_LedDevice):
+    def __init__(self, path=None, wireless=False, index=CORDED):
+        pid = None
+        if not path:
+            path, index, wireless, pid = find_mouse()
+        if not path:
+            raise DeviceNotFound("G502 not found (is it plugged in, or its receiver?)")
+        try:
+            # A logitech-dj child node answers with its receiver slot whatever index we send
+            self.hidpp = Hidpp(path, index, any_index=wireless and index == CORDED)
+        except PermissionError:
+            raise NoPermission(f"no permission on {path}: " + ("quit Logitech G HUB" if sys.platform == "win32"
+                               else "install udev/70-g502-hub.rules")) from None
+        self.path = path
+        self.wireless = wireless
+        self.model = "G502 LIGHTSPEED" if wireless or pid in LIGHTSPEED else "G502 HERO"
+        self._onboard_info = None
+        self._powerplay = None
+        self._lock_fd = None
+        self._lock_depth = 0
+
+    def close(self):
+        if self._powerplay is not None:
+            self._powerplay.close()
+        super().close()
+
+    def powerplay(self):
+        """The POWERPLAY mat, or None when there's none."""
+        if self._powerplay is None and (path := find_hidraw(VID, POWERPLAY_PID)):
+            self._powerplay = PowerPlay(path)
+        return self._powerplay
+
     # ------------------------------------------------------------ identity
+
+    def ping(self, timeout=0.5):
+        """Raise DeviceAsleep unless the mouse answers quickly; the receiver can't
+        tell us whether it is awake, so ask the mouse itself. Once more after a miss:
+        over the radio a reply now and then comes late or not at all."""
+        try:
+            self.hidpp.request(0, 1, [0, 0, 0x5A], timeout=timeout, retries=1)
+        except (TimeoutError, HidppError):
+            raise DeviceAsleep(f"{self.model} is asleep or switched off. Move it to wake it up.") from None
 
     def features(self):
         """[(index, feature id, type flags, version)] for every feature."""
@@ -184,6 +275,17 @@ class G502:
             prefix = r[1:4].decode(errors="replace").strip("\0 ")
             entities.append((r[0] & 0x0F, f"{prefix} {r[4]:02X}.{r[5]:02X}.B{int.from_bytes(r[6:8], 'big'):04X}"))
         return entities
+
+    def battery(self):
+        """The Battery, or None on a corded mouse without one."""
+        if self.hidpp.feature_index(BATTERY_VOLTAGE) is None:
+            return None
+        r = self._call(BATTERY_VOLTAGE, 0)
+        mv, flags = int.from_bytes(r[0:2], "big"), r[2]
+        # flags bit 7: external power; bits 0-2 then 0 = charging, 1 = full, 2 = slow charging
+        charging = bool(flags & 0x80) and flags & 0x07 in (0, 2)
+        full = bool(flags & 0x80) and flags & 0x07 == 1
+        return Battery(mv, 100 if full else None if charging else battery_percent(mv), charging, full)
 
     # ------------------------------------------------------------ onboard profiles
 
@@ -247,6 +349,9 @@ class G502:
         Selecting the profile that is already active does nothing, so hop to
         another slot and straight back (factory profiles can't be selected).
         Afterwards go to DPI level `dpi_index`, or back to the one the user was on.
+
+        The LIGHTSPEED refuses to select disabled slots, but applies writes to the
+        active profile by itself, so with no slot to hop through there is nothing to do.
         """
         current = self.get_current_profile()
         if dpi_index is None:
@@ -256,7 +361,15 @@ class G502:
                  [e.sector for e in entries if e.sector != current and not e.enabled]
         if not others:
             raise IOError("no other profile slot to reload through")
-        self.set_current_profile(others[0])
+        for sector in others:
+            try:
+                self.set_current_profile(sector)
+                break
+            except HidppError as e:
+                if e.code != ERR_INVALID_ARGUMENT:
+                    raise
+        else:
+            return
         self.set_current_profile(current)
         # Loading resets to the default DPI level; keep the one the user was on
         if dpi_index < len(self.read_profile(current).dpi_levels()):
@@ -296,6 +409,11 @@ class G502:
         sealed = onboard.crc_ok(data)
         if not sealed and not allow_bad_crc:
             raise ValueError("refusing to write a sector with a bad CRC")
+        if self.wireless:
+            # A mouse that dies or drops off the receiver mid-write leaves a half-written sector
+            bat = self.battery()
+            if bat and not (bat.charging or bat.full) and bat.percent < MIN_WRITE_BATTERY:
+                raise IOError(f"battery at {bat.percent}%: charge the mouse before writing to it")
         # A whole-sector write is safe to repeat, so a busy or silent mouse gets two more tries
         for attempt in range(3):
             try:
@@ -358,28 +476,6 @@ class G502:
         self._call(REPORT_RATE, 2, [ms])
 
     # ------------------------------------------------------------ LEDs
-
-    def led_zones(self):
-        if self._zones is None:
-            self._zones = []
-            for z in range(self._call(COLOR_LED_EFFECTS, 0)[0]):
-                zi = self._call(COLOR_LED_EFFECTS, 1, [z])
-                effects = {}
-                for e in range(zi[3]):
-                    ei = self._call(COLOR_LED_EFFECTS, 2, [z, e])
-                    effects[int.from_bytes(ei[2:4], "big")] = e
-                self._zones.append(LedZone(z, int.from_bytes(zi[1:3], "big"), effects))
-        return self._zones
-
-    def set_led(self, zone, effect, persistence=0):
-        """Show an LedEffect on a zone right now. persistence 0 = RAM only."""
-        z = self.led_zones()[zone]
-        if effect.effect not in z.effects:
-            raise ValueError(f"zone {zone} has no effect 0x{effect.effect:02X}")
-        params = effect.encode()[1:]
-        if effect.effect == 0x01:
-            params = params[:3] + b"\x02" + params[4:]  # no ramp, as G HUB does for live colors
-        self._call(COLOR_LED_EFFECTS, 3, bytes([zone, z.effects[effect.effect]]) + params + bytes([persistence]))
 
     def set_led_software_control(self, on):
         self._call(COLOR_LED_EFFECTS, 8, [1, 1] if on else [0, 0])

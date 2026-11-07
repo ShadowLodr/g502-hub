@@ -44,6 +44,7 @@ QLabel#LiveDpi {{
     background: {RAISED}; border: 1px solid {BORDER}; border-radius: 13px; padding: 4px 12px;
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
+QLabel#LiveDpi[kind="low"] {{ color: {DANGER}; border-color: {DANGER}; }}
 QLabel#Status {{ color: {MUTED}; font-size: 12px; }}
 QLabel#Status[kind="error"] {{ color: {DANGER}; }}
 QLabel#Status[kind="ok"] {{ color: {OK}; }}
@@ -207,6 +208,9 @@ def _icon_path(name):
         p.lineTo(22, 13.5)
         p.lineTo(15, 18)
         p.closeSubpath()
+    elif name == "powerplay":  # the mat with its logo puck
+        p.addRoundedRect(QRectF(2.5, 5, 19, 14), 2.5, 2.5)
+        p.addEllipse(QPointF(17, 9.5), 2, 2)
     elif name == "about":  # i in a circle
         p.addEllipse(QPointF(12, 12), 9, 9)
         p.moveTo(12, 10.5)

@@ -22,6 +22,7 @@ from .pages.assignments import AssignmentsPage
 from .pages.games import GamesPage
 from .pages.macros import MacrosPage
 from .pages.lighting import LightingPage
+from .pages.powerplay import PowerplayPage
 from .pages.profiles import ProfilesPage
 from .pages.sensitivity import SensitivityPage
 from .pages.settings import SettingsPage
@@ -34,7 +35,7 @@ class Placeholder(QWidget):
         super().__init__()
         col = QVBoxLayout(self)
         col.addStretch()
-        self.title = QLabel("Connect your G502 HERO")
+        self.title = QLabel("Connect your G502")
         self.title.setObjectName("Title")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self.title)
@@ -81,7 +82,7 @@ class MainWindow(QMainWindow):
         args = (self.state, self.view, self.keylabels)
         self.pages = [LightingPage(*args, self.live), AssignmentsPage(*args, self.macros), SensitivityPage(*args),
                       ProfilesPage(*args), MacrosPage(*args, self.macros), GamesPage(*args, self.rules),
-                      SettingsPage(*args), AboutPage(*args)]
+                      PowerplayPage(*args), SettingsPage(*args), AboutPage(*args)]
         bottom = {SettingsPage, AboutPage}  # pinned to the bottom of the rail, like G HUB's gear
 
         rail = QWidget()
@@ -137,7 +138,10 @@ class MainWindow(QMainWindow):
         self.state.profileEdited.connect(self._profile_edited)
         self.state.status.connect(self._status)
         self.state.connectedChanged.connect(self._connected)
+        self.state.batteryChanged.connect(self._show_battery)
         self.live.colors.connect(self.view.set_live)
+        mat_view = next(p for p in self.pages if isinstance(p, PowerplayPage)).mat
+        self.live.colors.connect(lambda colors: mat_view.set_live(colors.get(1) if self.state.syncing_mat else None))
         self.live.status.connect(self._status)
         self.live.runningChanged.connect(self._live_changed)
         self.tray = self._make_tray()
@@ -145,6 +149,8 @@ class MainWindow(QMainWindow):
         self.placeholder.fix.clicked.connect(self._fix_permissions)
         macros_page = next(i for i, p in enumerate(self.pages) if isinstance(p, MacrosPage))
         self.pages[1].open_macros = lambda: self.rail_group.button(macros_page).click()
+        self.rail_group.button(next(i for i, p in enumerate(self.pages)
+                                    if isinstance(p, PowerplayPage))).hide()  # until a mat shows up
         self.rail_group.button(0).setChecked(True)
         self.show_page(0)
         self._connected(False)
@@ -159,9 +165,9 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(24, 0, 24, 0)
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        name = QLabel("G502 HERO")
-        name.setFont(theme.font(15, QFont.Weight.Bold))
-        titles.addWidget(name)
+        self.model_label = QLabel("G502")
+        self.model_label.setFont(theme.font(15, QFont.Weight.Bold))
+        titles.addWidget(self.model_label)
         self.subtitle = QLabel("ONBOARD MEMORY")
         self.subtitle.setObjectName("Heading")
         titles.addWidget(self.subtitle)
@@ -184,6 +190,11 @@ class MainWindow(QMainWindow):
         self.live_dpi.setFixedHeight(28)
         self.live_dpi.hide()
         right.addWidget(self.live_dpi, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.battery = QLabel()
+        self.battery.setObjectName("LiveDpi")
+        self.battery.setFixedHeight(28)
+        self.battery.hide()
+        right.addWidget(self.battery, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addLayout(right, 1)
         return bar
 
@@ -206,6 +217,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ state signals
 
     def _loaded(self):
+        self.model_label.setText(self.state.model)
+        mat = next(i for i, p in enumerate(self.pages) if isinstance(p, PowerplayPage))
+        self.rail_group.button(mat).setVisible(self.state.mat_led is not None)
+        self._show_battery()
         self._fill_profile_box()
         self._shown_slot = self.state.active_slot
         self._sync_center()
@@ -232,7 +247,26 @@ class MainWindow(QMainWindow):
     def _connected(self, connected):
         self.side.setEnabled(connected)
         self.profile_box.setEnabled(connected)
+        if not connected:
+            self.battery.hide()
         self._sync_center()
+
+    def _show_battery(self):
+        bat = self.state.battery
+        self.battery.setVisible(bat is not None and self.state.connected)
+        if bat is None:
+            return
+        if bat.percent is None:
+            self.battery.setText("CHARGING")
+            self.battery.setToolTip(f"{bat.millivolts} mV. The level shows again once it's off the "
+                                    "charger; charging lifts the voltage it's estimated from")
+        else:
+            self.battery.setText(f"{'FULL' if bat.full else 'BATTERY'}  {bat.percent}%")
+            self.battery.setToolTip(f"About {bat.percent}% ({bat.millivolts} mV); estimated from the voltage")
+        low = bat.percent is not None and bat.percent <= 15 and not bat.full
+        self.battery.setProperty("kind", "low" if low else "")
+        self.battery.style().unpolish(self.battery)
+        self.battery.style().polish(self.battery)
 
     def _status(self, kind, text):
         self.status_label.setText(text)

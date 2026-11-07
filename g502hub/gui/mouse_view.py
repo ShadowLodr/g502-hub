@@ -84,7 +84,7 @@ class MouseView(QWidget):
 
     def fetch_photo(self):
         """Download Logitech's photo (first start, or to replace a damaged copy)."""
-        self.skin.message = "Getting the picture of your G502 HERO from logitechg.com…"
+        self.skin.message = "Getting the picture of the G502 from logitechg.com…"
         self.update()
         self.fetcher.start()
 
