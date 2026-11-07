@@ -10,6 +10,9 @@ LICENSE = "GPL-3.0-or-later"
 
 # Fill these in before publishing (tools/set-github-user.sh sets GITHUB); empty ones are hidden.
 GITHUB = "Ahmedxsaad"   # GitHub username that hosts the g502-hub repository
+# Where Settings > Updates pulls new commits from: this fork, which has no releases
+UPDATES_REPO = "ShadowLodr/g502-hub"
+UPDATES_BRANCH = "main"
 REDDIT = ""   # Reddit username, without u/
 DONATE = ""   # a Ko-fi, PayPal or GitHub Sponsors link
 SITE = "https://g502hub.ahmedxsaad.me"      # the project website

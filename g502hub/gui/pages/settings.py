@@ -75,7 +75,7 @@ class SettingsPage(Page):
         self.update_check.setChecked(settings.load().get("update_check", True))
         self.update_check.toggled.connect(self._toggle_update_check)
         self.layout.addWidget(self.update_check)
-        self.layout.addWidget(muted(self.tr("Asks GitHub for the latest release. Nothing else is sent."), "Faint"))
+        self.layout.addWidget(muted(self.tr("Asks GitHub (with git) for new commits on {repo}. Nothing else is sent.").format(repo=about.UPDATES_REPO), "Faint"))
         self.updates.changed.connect(self._show_updates)
         self.updates.updated.connect(self._updated)
         self._show_updates()
@@ -146,35 +146,36 @@ class SettingsPage(Page):
 
     def _show_updates(self):
         u = self.updates
-        latest = u.latest.version if u.latest else None
-        if u.checking:
+        here = self.tr("You have G502 Hub {version} ({commit}).").format(version=about.VERSION, commit=u.commit or "?")
+        if not u.can_update:
+            text = self.tr("This copy wasn't installed from git, so it can't update itself. "
+                           "Reinstall it from {repo}.").format(repo=about.UPDATES_REPO)
+        elif u.checking:
             text = self.tr("Checking for updates…")
         elif u.updating:
             text = self.tr("Updating…")
         elif u.installed:
-            text = self.tr("G502 Hub {version} is installed. Restart G502 Hub to use it.").format(version=latest)
+            text = self.tr("Updated to {commit}. Restart G502 Hub to use it.").format(commit=u.commit or u.latest.version)
         elif u.update_error:
             text = self.tr("Couldn't update: {error}").format(error=u.update_error)
         elif u.available:
-            text = self.tr("G502 Hub {version} is out (you have {current}).").format(version=latest, current=about.VERSION)
-            if u.kind == "package":
-                text += " " + self.tr("Update it with your package manager or AUR helper, e.g. yay -Syu.")
-            elif u.kind == "source":
-                text += " " + self.tr("Run git pull in {path} to update.").format(path=u.root)
+            text = self.tr("{count} new update(s) on {repo}.").format(count=u.latest.count, repo=about.UPDATES_REPO) \
+                + " " + here
         elif u.error:
             text = self.tr("Couldn't check for updates: {error}").format(error=u.error)
         elif u.latest:
-            text = self.tr("G502 Hub {version} is the latest version.").format(version=about.VERSION)
+            text = self.tr("G502 Hub is up to date ({commit}).").format(commit=u.commit or u.latest.version)
         else:
-            text = self.tr("You have G502 Hub {version}.").format(version=about.VERSION)
+            text = here
         self.update_status.setText(text)
         if u.installed:
             self.update_btn.setText(self.tr("Restart now"))
-        elif u.available and u.kind == "script":
+        elif u.available:
             self.update_btn.setText(self.tr("Update now"))
         else:
             self.update_btn.setText(self.tr("Check now"))
-        self.update_btn.setEnabled(not (u.checking or u.updating))
+        self.update_btn.setEnabled(u.can_update and not (u.checking or u.updating))
+        self.update_check.setEnabled(u.can_update)
         self.notes_btn.setVisible(u.available)
 
     def _update_clicked(self):
@@ -182,7 +183,7 @@ class SettingsPage(Page):
         if u.installed:
             if self.restart_app:
                 self.restart_app()
-        elif u.available and u.kind == "script":
+        elif u.available:
             u.install()
         else:
             u.check()
@@ -195,8 +196,7 @@ class SettingsPage(Page):
     def _updated(self, error):
         if error is None and self.restart_app and QMessageBox.question(
                 self.panel, self.tr("Restart G502 Hub?"),
-                self.tr("G502 Hub {version} is installed. Restart now to use it?").format(
-                    version=self.updates.latest.version)) == QMessageBox.StandardButton.Yes:
+                self.tr("G502 Hub is updated. Restart now to use it?")) == QMessageBox.StandardButton.Yes:
             self.restart_app()
 
     def refresh(self):

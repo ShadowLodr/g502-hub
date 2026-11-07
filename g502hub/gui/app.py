@@ -399,12 +399,12 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def _update_found(self):
-        """Say once per version that a newer one is out; Settings shows how to get it."""
+        """Say once per new commit that updates are waiting; Settings has the button."""
         u = self.updates
         if not u.available or u.installed or settings.load().get("update_notified") == u.latest.version:
             return
         settings.update(update_notified=u.latest.version)
-        text = self.tr("G502 Hub {version} is out. Update it from Settings.").format(version=u.latest.version)
+        text = self.tr("{count} new update(s) for G502 Hub. Update it from Settings.").format(count=u.latest.count)
         self._status("info", text)
         if self.tray is not None:
             self.tray.showMessage("G502 Hub", text, QSystemTrayIcon.MessageIcon.Information, 6000)

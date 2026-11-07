@@ -1,17 +1,14 @@
 """The update check: versions, how a copy updates, the checker and what Settings shows. No network."""
 
-import io
-import json
 import subprocess
 import time
-import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from g502hub import about, settings
+from g502hub import settings
 from g502hub.gui import updates
 from g502hub.gui.app import MainWindow
 from g502hub.gui.pages.settings import SettingsPage
@@ -35,26 +32,71 @@ def wait_for(predicate):
     assert predicate()
 
 
-def test_versions_compare_as_numbers():
-    assert updates.parse_version("v0.3.0") == (0, 3, 0)
-    assert updates.is_newer("0.10.0", "0.9.9")
-    assert updates.is_newer("v1.0.0", "0.3.0")
-    assert not updates.is_newer("0.3.0", "0.3.0")
-    assert not updates.is_newer("0.2.9", "0.3.0")
-    assert not updates.is_newer("garbage", "0.3.0")
+def git(cwd, *args):
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def test_fetch_latest_reads_the_release(monkeypatch):
-    reply = {"tag_name": "v0.4.0", "html_url": "https://github.com/x/releases/tag/v0.4.0"}
-    seen = {}
+def commit(repo, name):
+    (repo / name).write_text(name)
+    git(repo, "add", name)
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", name)
 
-    def urlopen(req, timeout):
-        seen["url"], seen["agent"] = req.full_url, req.get_header("User-agent")
-        return io.BytesIO(json.dumps(reply).encode())
-    monkeypatch.setattr(updates.urllib.request, "urlopen", urlopen)
-    assert REAL_FETCH() == Release("0.4.0", reply["html_url"])
-    assert seen["url"].endswith(f"/repos/{about.GITHUB}/g502-hub/releases/latest")
-    assert seen["agent"] == f"g502-hub/{about.VERSION}"
+
+@pytest.fixture
+def fork(tmp_path, monkeypatch):
+    """A stand-in for the fork on GitHub, and a copy cloned from it."""
+    upstream = tmp_path / "fork"
+    upstream.mkdir()
+    git(upstream, "init", "-q", "-b", "main")
+    commit(upstream, "pyproject.toml")
+    copy = tmp_path / "copy"
+    git(tmp_path, "clone", "-q", str(upstream), str(copy))
+    monkeypatch.setattr(updates, "REPO_URL", str(upstream))
+    monkeypatch.setattr(updates, "BRANCH", "main")
+    return upstream, copy
+
+
+def test_fetch_latest_counts_new_commits_on_the_fork(fork):
+    upstream, copy = fork
+    assert REAL_FETCH(copy).count == 0
+    commit(upstream, "a")
+    commit(upstream, "b")
+    latest = REAL_FETCH(copy)
+    assert latest.count == 2
+    assert latest.version == git(upstream, "rev-parse", "--short=7", "HEAD")
+    assert latest.url.startswith(f"{updates.REPO_URL}/compare/")
+    assert not (copy / "a").exists()  # checking never changes the copy
+
+
+def test_update_copy_fast_forwards_to_the_fork(fork):
+    upstream, copy = fork
+    commit(upstream, "a")
+    updates.update_copy(copy)
+    assert (copy / "a").exists()
+    assert git(copy, "rev-parse", "HEAD") == git(upstream, "rev-parse", "HEAD")
+    assert REAL_FETCH(copy).count == 0
+
+
+def test_update_copy_refuses_when_the_copy_went_its_own_way(fork):
+    upstream, copy = fork
+    commit(upstream, "a")
+    commit(copy, "mine")
+    with pytest.raises(subprocess.CalledProcessError) as e:
+        updates.update_copy(copy)
+    assert "fast-forward" in updates._reason(e.value)
+    assert not (copy / "a").exists()
+
+
+def test_a_script_copy_also_rewrites_the_menu_entry(monkeypatch, tmp_path):
+    ran = []
+    monkeypatch.setattr(updates, "_git", lambda root, *args, **kw: ran.append(["git", *args]))
+    monkeypatch.setattr(updates.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "install-desktop.sh").touch()
+    updates.update_copy(tmp_path, "script")
+    assert ran[0] == ["git", "pull", "--ff-only", "--quiet", updates.REPO_URL, updates.BRANCH]
+    if updates.sys.platform != "win32":
+        assert ran[1] == ["sh", str(tmp_path / "tools" / "install-desktop.sh")]
 
 
 def test_install_kind(monkeypatch, tmp_path):
@@ -70,35 +112,35 @@ def test_install_kind(monkeypatch, tmp_path):
     assert updates.install_kind(tmp_path / "checkout") == "source"
 
 
-def test_updating_a_script_copy_pulls_and_rewrites_the_menu_entry(monkeypatch, tmp_path):
-    ran = []
-    monkeypatch.setattr(updates.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
-    updates.update_script_copy(tmp_path)
-    assert ran == [["git", "-C", str(tmp_path), "pull", "--ff-only", "--quiet"],
-                   ["sh", str(tmp_path / "tools" / "install-desktop.sh")]]
+def test_missing_git_is_said_plainly():
+    assert updates._reason(FileNotFoundError(2, "No such file", "git")) == "git isn't installed"
 
 
 def test_check_finds_a_newer_release():
     updates.fetch_latest.side_effect = None
-    updates.fetch_latest.return_value = Release("99.0.0", "https://example.invalid/release")
+    updates.fetch_latest.return_value = Release("abc1234", "https://example.invalid/compare", 3)
     u = Updates()
+    u.kind = "source"
     u.check()
     wait_for(lambda: not u.checking)
-    assert u.available and u.latest.version == "99.0.0" and u.error is None
+    assert u.available and u.latest.count == 3 and u.error is None
     assert time.time() - settings.load()["update_checked_at"] < 5
 
 
 def test_check_reports_why_it_failed():
-    updates.fetch_latest.side_effect = urllib.error.URLError("no connection")
+    updates.fetch_latest.side_effect = subprocess.CalledProcessError(
+        128, "git", stderr="fatal: unable to access 'https://github.com/x/': Could not resolve host: github.com\n")
     u = Updates()
+    u.kind = "source"
     u.check()
     wait_for(lambda: not u.checking)
-    assert not u.available and u.error == "no connection"
+    assert not u.available and "Could not resolve host" in u.error
     assert "update_checked_at" not in settings.load()  # try again next time
 
 
 def test_daily_check_respects_the_setting_and_the_last_check():
     u = Updates()
+    u.kind = "source"
     u.check = MagicMock()
     u.check_if_due()
     assert u.check.call_count == 1  # never checked
@@ -111,26 +153,31 @@ def test_daily_check_respects_the_setting_and_the_last_check():
     settings.update(update_check=False)
     u.check_if_due()
     assert u.check.call_count == 2
+    settings.update(update_check=True)
+    u.kind = "package"  # can't update itself, so there's nothing to check for
+    u.check_if_due()
+    assert u.check.call_count == 2
 
 
-def test_install_only_for_script_copies(monkeypatch):
+def test_install_pulls_unless_installed_as_a_package(monkeypatch):
     copy = MagicMock()
-    monkeypatch.setattr(updates, "update_script_copy", copy)
+    monkeypatch.setattr(updates, "update_copy", copy)
+    monkeypatch.setattr(updates, "current_commit", lambda root=None: "def5678")
     u = Updates()
     u.kind = "package"
     u.install()
     assert not copy.called
-    u.kind = "script"
+    u.kind = "source"
     results = []
     u.updated.connect(results.append)
     u.install()
     wait_for(lambda: not u.updating)
-    assert copy.called and u.installed and results == [None]
-    copy.side_effect = subprocess.CalledProcessError(1, "git", stderr="fatal: not possible to fast-forward\n")
+    assert copy.called and u.installed and results == [None] and u.commit == "def5678"
+    copy.side_effect = subprocess.CalledProcessError(1, "git", stderr="fatal: Not possible to fast-forward, aborting.\n")
     u.installed = False
     u.install()
     wait_for(lambda: not u.updating)
-    assert not u.installed and results[-1] == "fatal: not possible to fast-forward"
+    assert not u.installed and results[-1] == "fatal: Not possible to fast-forward, aborting."
 
 
 def page_with(kind, latest=None, installed=False):
@@ -142,26 +189,25 @@ def page_with(kind, latest=None, installed=False):
 
 
 def test_settings_shows_what_to_do():
-    newer = Release("99.0.0", "https://example.invalid/release")
+    newer = Release("abc1234", "https://example.invalid/compare", 2)
     page = page_with("script")
     assert page.update_btn.text() == "Check now" and page.notes_btn.isHidden()
-    page = page_with("script", newer)
-    assert page.update_btn.text() == "Update now" and not page.notes_btn.isHidden()
-    page = page_with("package", newer)
-    assert page.update_btn.text() == "Check now" and "yay -Syu" in page.update_status.text()
     page = page_with("source", newer)
-    assert "git pull" in page.update_status.text()
-    page = page_with("script", Release(about.VERSION, "https://example.invalid/release"))
-    assert "is the latest version" in page.update_status.text() and page.notes_btn.isHidden()
+    assert page.update_btn.text() == "Update now" and not page.notes_btn.isHidden()
+    assert "2 new update(s)" in page.update_status.text()
+    page = page_with("package", newer)
+    assert not page.update_btn.isEnabled() and "can't update itself" in page.update_status.text()
+    page = page_with("script", Release("abc1234", "https://example.invalid/compare", 0))
+    assert "up to date" in page.update_status.text() and page.notes_btn.isHidden()
     page = page_with("script", newer, installed=True)
     assert page.update_btn.text() == "Restart now"
 
 
 def test_a_new_version_is_announced_once():
     u = Updates()
-    u.latest = Release("99.0.0", "https://example.invalid/release")
+    u.latest = Release("abc1234", "https://example.invalid/compare", 3)
     window = SimpleNamespace(updates=u, tray=MagicMock(), _status=MagicMock(), tr=lambda text: text)
     MainWindow._update_found(window)
     MainWindow._update_found(window)
     assert window.tray.showMessage.call_count == 1
-    assert "99.0.0" in window._status.call_args.args[1]
+    assert "3 new update(s)" in window._status.call_args.args[1]

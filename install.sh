@@ -10,7 +10,7 @@
 # lets you configure the mouse without root, and adds "G502 Hub" to your menu.
 set -eu
 
-REPO="${G502HUB_REPO:-https://github.com/Ahmedxsaad/g502-hub}"
+REPO="${G502HUB_REPO:-https://github.com/ShadowLodr/g502-hub}"
 BRANCH="${G502HUB_BRANCH:-main}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 APP="$DATA/g502-hub/app"

@@ -16,6 +16,14 @@ no root.
 curl -fsSL https://g502hub.ahmedxsaad.me/install.sh | sh
 ```
 
+This fork (G502 LIGHTSPEED, POWERPLAY, Windows) installs with its own copy of the script, and then
+updates itself from **Settings → Updates → Update now**, which pulls new commits from
+`ShadowLodr/g502-hub` main. Any git checkout of it works the same way.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ShadowLodr/g502-hub/main/install.sh | sh
+```
+
 It installs the dependencies with your package manager, puts the app in
 `~/.local/share/g502-hub`, adds the permission rule that lets your user talk
 to the mouse, and adds **G502 Hub** to your applications menu. Uninstall with

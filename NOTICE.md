@@ -64,5 +64,6 @@ files are in `website/fonts/`).
 Everything runs on your computer. Screen and audio are analysed locally for
 the live effects and are never stored or sent anywhere. The app goes online
 for two things only: the one-time download of the mouse photo from Logitech's
-website, and a check for a newer release on GitHub once a day, which Settings
-can turn off. That check sends nothing but the request itself.
+website, and a git fetch of this fork (ShadowLodr/g502-hub) once a day to see
+whether it has new commits, which Settings can turn off. That check sends
+nothing but git's own request.
