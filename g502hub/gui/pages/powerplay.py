@@ -12,7 +12,6 @@ from ..mouse_view import effect_color
 from ..photo import PhotoFetcher
 from ..widgets import ChoiceList, ColorPicker, SliderRow, heading, muted
 from . import Page
-from .lighting import EFFECTS
 
 
 class MatView(QWidget):
@@ -109,7 +108,10 @@ class PowerplayPage(Page):
 
         self.effect_heading = heading("Effect")
         self.layout.addWidget(self.effect_heading)
-        self.effects = ChoiceList(EFFECTS, columns=2)
+        effects = [(0x01, self.tr("Fixed")), (0x0A, self.tr("Breathing")),
+                   (0x03, self.tr("Color cycle")), (0x00, self.tr("Off"))]
+        self.effect_ids = {e for e, _ in effects}
+        self.effects = ChoiceList(effects, columns=2)
         self.effects.changed.connect(lambda _: self._apply(final=True))
         self.layout.addWidget(self.effects)
 
@@ -172,7 +174,7 @@ class PowerplayPage(Page):
         for w in (self.effect_heading, self.effects, self.color_heading, self.picker, self.rate, self.brightness):
             w.setEnabled(not synced)
         self.mat.set_effect(led)
-        self.effects.set_value(led.effect if led.effect in dict(EFFECTS) else None)
+        self.effects.set_value(led.effect if led.effect in self.effect_ids else None)
         if led.effect in (0x01, 0x0A):
             self.picker.set_color(QColor(*led.color))
         if led.effect in (0x0A, 0x03):
