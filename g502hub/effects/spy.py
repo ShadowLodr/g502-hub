@@ -39,7 +39,7 @@ class ButtonSpy:
     (device.G502.spy_start/spy_stop); this only listens.
     """
 
-    def __init__(self, path, feature_index, device_index=0xFF, raw=None):
+    def __init__(self, path, feature_index, device_index=0xFF, raw=None, on_change=None):
         self.path, self.feature_index, self.device_index = path, feature_index, device_index
         self.state = "idle"
         self.error = None
@@ -49,6 +49,9 @@ class ButtonSpy:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
+        # Called on the reader thread after changes have been queued. GUI users
+        # should emit a queued signal here rather than touch widgets directly.
+        self._on_change = on_change
 
     def start(self):
         if self._thread is not None:
@@ -93,8 +96,12 @@ class ButtonSpy:
             if data is None:
                 continue
             masks, rest = parse(rest + data, self.feature_index, self.device_index)
+            changed = False
             for mask in masks:
                 if mask != self._mask:
                     with self._lock:
                         self._changes.append((self._mask, mask))
                     self._mask = mask
+                    changed = True
+            if changed and self._on_change is not None:
+                self._on_change()

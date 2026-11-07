@@ -75,24 +75,30 @@ class MouseView(QWidget):
     def set_leds(self, effects):
         """effects: {zone: LedEffect}"""
         self.leds.update(effects)
-        animated = any(e is not None and e.effect in (0x03, 0x0A) for e in self.leds.values())
+        self._sync_animation()
+        self.update()
+
+    def _sync_animation(self):
+        animated = self.isVisible() and any(
+            z not in self.live and e is not None and e.effect in (0x03, 0x0A)
+            for z, e in self.leds.items())
         if animated and not self._timer.isActive():
             self._timer.start()
         elif not animated:
             self._timer.stop()
-        self.update()
 
     def fetch_photo(self):
         """Download Logitech's photo (first start, or to replace a damaged copy)."""
-        self.skin.message = "Getting the picture of the G502 from logitechg.com…"
+        self.skin.message = self.tr("Getting the picture of the G502 from logitechg.com…")
         self.update()
         self.fetcher.start()
 
     def _fetched(self, error):
         image = None if error else load_image()
         if image is None:
-            self.skin.message = (f"Couldn't download the picture of the mouse ({error or 'damaged file'}). "
-                                 "Click here to try again.")
+            err_msg = error or self.tr("damaged file")
+            self.skin.message = (self.tr("Couldn't download the picture of the mouse ({error}). ").format(error=err_msg) +
+                                 self.tr("Click here to try again."))
         else:
             self.skin.set_image(image)
         self.update()
@@ -101,6 +107,7 @@ class MouseView(QWidget):
     def set_live(self, colors):
         """colors: {zone: QColor} from a live effect; {} to show the saved effects again."""
         self.live = dict(colors)
+        self._sync_animation()
         self.update()
 
     # ------------------------------------------------------------ geometry
@@ -129,6 +136,14 @@ class MouseView(QWidget):
                (self.mode == "light" and el.kind == "led")
 
     # ------------------------------------------------------------ events
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_animation()
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
 
     def mouseMoveEvent(self, e):
         key = self._hit(e.position())

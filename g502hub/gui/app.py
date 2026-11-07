@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QHBoxLayout, QLabel,
@@ -14,20 +14,22 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QHBoxLayou
 from .. import settings
 from ..keylabels import KeyLabels
 from . import system, theme
-from .live import EFFECT_NAMES, LiveLighting
+from .i18n import setup_translation
+from .live import LiveLighting, effect_name
 from .macro_engine import MacroEngine
 from .mouse_view import MouseView
 from .pages.about import AboutPage
 from .pages.assignments import AssignmentsPage
 from .pages.games import GamesPage
-from .pages.macros import MacrosPage
 from .pages.lighting import LightingPage
+from .pages.macros import MacrosPage
 from .pages.powerplay import PowerplayPage
 from .pages.profiles import ProfilesPage
 from .pages.sensitivity import SensitivityPage
 from .pages.settings import SettingsPage
 from .rules_engine import RulesEngine
 from .state import MouseState
+from .updates import Updates
 
 
 class Placeholder(QWidget):
@@ -35,17 +37,17 @@ class Placeholder(QWidget):
         super().__init__()
         col = QVBoxLayout(self)
         col.addStretch()
-        self.title = QLabel("Connect your G502")
+        self.title = QLabel(self.tr("Connect your G502"))
         self.title.setObjectName("Title")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self.title)
-        self.detail = QLabel("Looking for the mouse…")
+        self.detail = QLabel(self.tr("Looking for the mouse…"))
         self.detail.setObjectName("Muted")
         self.detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.detail.setWordWrap(True)
         col.addWidget(self.detail)
         col.addSpacing(12)
-        self.fix = QPushButton("Allow access (asks for your password)")
+        self.fix = QPushButton(self.tr("Allow access (asks for your password)"))
         self.fix.setObjectName("Primary")
         self.fix.hide()
         col.addWidget(self.fix, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -64,6 +66,7 @@ class MainWindow(QMainWindow):
         self.keylabels = KeyLabels()
         self.macros = MacroEngine(self.state, self.keylabels)
         self.view = MouseView()
+        self.updates = Updates(self)
         self._shown_slot = None
         self._resumed = False
 
@@ -82,7 +85,7 @@ class MainWindow(QMainWindow):
         args = (self.state, self.view, self.keylabels)
         self.pages = [LightingPage(*args, self.live), AssignmentsPage(*args, self.macros), SensitivityPage(*args),
                       ProfilesPage(*args), MacrosPage(*args, self.macros), GamesPage(*args, self.rules),
-                      PowerplayPage(*args), SettingsPage(*args), AboutPage(*args)]
+                      PowerplayPage(*args), SettingsPage(*args, self.updates), AboutPage(*args)]
         bottom = {SettingsPage, AboutPage}  # pinned to the bottom of the rail, like G HUB's gear
 
         rail = QWidget()
@@ -151,6 +154,12 @@ class MainWindow(QMainWindow):
         self.pages[1].open_macros = lambda: self.rail_group.button(macros_page).click()
         self.rail_group.button(next(i for i, p in enumerate(self.pages)
                                     if isinstance(p, PowerplayPage))).hide()  # until a mat shows up
+        next(p for p in self.pages if isinstance(p, SettingsPage)).restart_app = self.restart
+        self.restarting = False
+        self.updates.changed.connect(self._update_found)
+        QTimer.singleShot(15_000, self.updates.check_if_due)  # once startup has settled
+        self._update_timer = QTimer(self, interval=3_600_000, timeout=self.updates.check_if_due)
+        self._update_timer.start()  # the app can run in the tray for days
         self.rail_group.button(0).setChecked(True)
         self.show_page(0)
         self._connected(False)
@@ -168,14 +177,14 @@ class MainWindow(QMainWindow):
         self.model_label = QLabel("G502")
         self.model_label.setFont(theme.font(15, QFont.Weight.Bold))
         titles.addWidget(self.model_label)
-        self.subtitle = QLabel("ONBOARD MEMORY")
+        self.subtitle = QLabel(self.tr("ONBOARD MEMORY"))
         self.subtitle.setObjectName("Heading")
         titles.addWidget(self.subtitle)
         row.addLayout(titles, 1)
         self.profile_box = QComboBox()
         self.profile_box.setObjectName("ProfileBox")
         self.profile_box.setMinimumWidth(280)
-        self.profile_box.setToolTip("Active onboard profile")
+        self.profile_box.setToolTip(self.tr("Active onboard profile"))
         self.profile_box.activated.connect(lambda i: self.state.activate(i + 1))
         row.addWidget(self.profile_box)
         right = QHBoxLayout()
@@ -186,7 +195,7 @@ class MainWindow(QMainWindow):
         right.addWidget(self.status_label)
         self.live_dpi = QLabel()
         self.live_dpi.setObjectName("LiveDpi")
-        self.live_dpi.setToolTip("Current DPI on the mouse")
+        self.live_dpi.setToolTip(self.tr("Current DPI on the mouse"))
         self.live_dpi.setFixedHeight(28)
         self.live_dpi.hide()
         right.addWidget(self.live_dpi, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -282,16 +291,19 @@ class MainWindow(QMainWindow):
         self.profile_box.blockSignals(True)
         self.profile_box.clear()
         for n, profile in enumerate(s.profiles, 1):
-            self.profile_box.addItem(f"PROFILE {n}:  {(profile.name or f'Profile {n}').upper()}")
+            name = (profile.name or self.tr("Profile {n}").format(n=n)).upper()
+            self.profile_box.addItem(self.tr("PROFILE {n}:  {name}").format(n=n, name=name))
         if s.active_slot:
             self.profile_box.setCurrentIndex(s.active_slot - 1)
         self.profile_box.blockSignals(False)
         if s.active_slot:
-            self.subtitle.setText(f"ONBOARD MEMORY  ·  SLOT {s.active_slot}")
+            self.subtitle.setText(self.tr("ONBOARD MEMORY  ·  SLOT {slot}").format(slot=s.active_slot))
         profile = s.profile()
         levels = [slot for slot, _ in profile.dpi_levels()] if profile else []
         if profile and s.dpi_index in levels:
-            self.live_dpi.setText(f"{profile.dpi[s.dpi_index]} DPI   ·   LEVEL {levels.index(s.dpi_index) + 1}/{len(levels)}")
+            live_text = self.tr("{dpi} DPI   ·   LEVEL {level}/{total}").format(
+                dpi=profile.dpi[s.dpi_index], level=levels.index(s.dpi_index) + 1, total=len(levels))
+            self.live_dpi.setText(live_text)
         self.live_dpi.setVisible(bool(profile and s.dpi_index in levels))
 
     def _warn_ratbagd(self):
@@ -309,8 +321,8 @@ class MainWindow(QMainWindow):
         except OSError:
             running = False
         if running:
-            self._status("error", "ratbagd (Piper) is running and may overwrite your G-Shift layer. "
-                                  "Close Piper / stop ratbagd.")
+            self._status("error", self.tr("ratbagd (Piper) is running and may overwrite your G-Shift layer. "
+                                          "Close Piper / stop ratbagd."))
 
     def _show_osd(self):
         """Popup on DPI or profile changes, like G HUB's."""
@@ -321,8 +333,8 @@ class MainWindow(QMainWindow):
             return
         profile = s.profile()
         if now[0] != before[0]:
-            name = profile.name if profile and profile.name else f"Profile {now[0]}"
-            system.show_osd(f"{name}  ·  slot {now[0]}")
+            name = profile.name if profile and profile.name else self.tr("Profile {slot}").format(slot=now[0])
+            system.show_osd(self.tr("{name}  ·  slot {slot}").format(name=name, slot=now[0]))
         elif profile and now[1] is not None and now[1] < 5 and profile.dpi[now[1]]:
             system.show_osd(f"{profile.dpi[now[1]]} DPI")
 
@@ -347,13 +359,13 @@ class MainWindow(QMainWindow):
         tray = QSystemTrayIcon(QIcon.fromTheme("input-mouse", theme.icon("assignments")), self)
         tray.setToolTip("G502 Hub")
         menu = QMenu(self)
-        menu.addAction("Open G502 Hub", self._show_window)
+        menu.addAction(self.tr("Open G502 Hub"), self._show_window)
         menu.addSeparator()
-        self.tray_live = QAction("Live lighting", self, checkable=True)
+        self.tray_live = QAction(self.tr("Live lighting"), self, checkable=True)
         self.tray_live.toggled.connect(self._tray_live_toggled)
         menu.addAction(self.tray_live)
         menu.addSeparator()
-        menu.addAction("Quit", self.quit)
+        menu.addAction(self.tr("Quit"), self.quit)
         tray.setContextMenu(menu)
         tray.activated.connect(lambda reason: self._show_window()
                                if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
@@ -376,8 +388,8 @@ class MainWindow(QMainWindow):
             self.tray_live.blockSignals(True)
             self.tray_live.setChecked(running)
             self.tray_live.blockSignals(False)
-            self.tray_live.setText(f"Live lighting: {EFFECT_NAMES[self.live.selected]}")
-            self.tray.setToolTip(f"G502 Hub · {EFFECT_NAMES[self.live.effect]} on" if running else "G502 Hub")
+            self.tray_live.setText(self.tr("Live lighting: {effect}").format(effect=effect_name(self.live.selected)))
+            self.tray.setToolTip(self.tr("G502 Hub · {effect} on").format(effect=effect_name(self.live.effect)) if running else "G502 Hub")
 
     def quit(self):
         self.rules.stop()
@@ -385,6 +397,22 @@ class MainWindow(QMainWindow):
         self.live.shutdown()  # the saved lighting comes back; a live effect resumes next start
         self.state.shutdown()
         QApplication.quit()
+
+    def _update_found(self):
+        """Say once per version that a newer one is out; Settings shows how to get it."""
+        u = self.updates
+        if not u.available or u.installed or settings.load().get("update_notified") == u.latest.version:
+            return
+        settings.update(update_notified=u.latest.version)
+        text = self.tr("G502 Hub {version} is out. Update it from Settings.").format(version=u.latest.version)
+        self._status("info", text)
+        if self.tray is not None:
+            self.tray.showMessage("G502 Hub", text, QSystemTrayIcon.MessageIcon.Information, 6000)
+
+    def restart(self):
+        """Quit, and have main() start a new copy (to show another language)."""
+        self.restarting = True
+        self.quit()
 
     def closeEvent(self, e):
         prefs = settings.load()
@@ -394,8 +422,8 @@ class MainWindow(QMainWindow):
             self.hide()
             if not prefs.get("tray_hint_shown"):
                 settings.update(tray_hint_shown=True)
-                self.tray.showMessage("G502 Hub", "G502 Hub keeps running in the tray. Quit it from the "
-                                      "tray menu.", QSystemTrayIcon.MessageIcon.Information, 4000)
+                self.tray.showMessage("G502 Hub", self.tr("G502 Hub keeps running in the tray. Quit it from the "
+                                                          "tray menu."), QSystemTrayIcon.MessageIcon.Information, 4000)
             return
         self.quit()
         super().closeEvent(e)
@@ -442,6 +470,7 @@ def main():
     tray_only = "--tray" in sys.argv[1:]
     if _hand_over(b"tray" if tray_only else b"show"):
         sys.exit(0)
+    setup_translation(app)
     app.setApplicationName("G502 Hub")
     app.setDesktopFileName("g502-hub")
     app.setQuitOnLastWindowClosed(False)  # the tray keeps live effects running
@@ -452,4 +481,9 @@ def main():
     window._instance_server = _listen(window)
     if not (tray_only and window.tray is not None):
         window.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    if window.restarting:
+        # Everything is shut down and the mouse released; replace this process with a new copy
+        cmd = system.launch_command()
+        os.execvp(cmd[0], cmd)
+    sys.exit(code)
